@@ -9,12 +9,59 @@
   },
   "favicon": "/favicon.svg",
   "navigation": {
-    "pages": [
+    "languages": [
       {
-        "group": "Getting Started",
+        "language": "en",
         "pages": [
-          "index",
-          "quickstart"
+          {
+            "group": "Getting Started",
+            "pages": [
+              "index",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/response-api"
+            ]
+          }
+        ]
+      },
+      {
+        "language": "zh",
+        "pages": [
+          {
+            "group": "开始使用",
+            "pages": [
+              "zh/index",
+              "zh/quickstart"
+            ]
+          },
+          {
+            "group": "指南",
+            "pages": [
+              "zh/guides/response-api"
+            ]
+          }
+        ]
+      },
+      {
+        "language": "jp",
+        "pages": [
+          {
+            "group": "はじめに",
+            "pages": [
+              "jp/index",
+              "jp/quickstart"
+            ]
+          },
+          {
+            "group": "ガイド",
+            "pages": [
+              "jp/guides/response-api"
+            ]
+          }
         ]
       }
     ],
@@ -31,22 +78,7 @@
           "icon": "newspaper"
         }
       ]
-    },
-    "groups": [
-      {
-        "group": "Getting Started",
-        "pages": [
-          "index",
-          "quickstart"
-        ]
-      },
-      {
-        "group": "Guides",
-        "pages": [
-          "guides/response-api"
-        ]
-      }
-    ]
+    }
   },
   "logo": {
     "light": "/logo/light.svg",
