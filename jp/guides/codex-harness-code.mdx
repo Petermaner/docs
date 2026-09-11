@@ -1,0 +1,882 @@
+---
+title: "実行可能な Demo コード付録"
+description: "本チュートリアルで使用する Runtime、Memory、App Server、PTC、Steering、テストコードを保存します。"
+---
+
+## 17. 完全なコード付録
+
+以下のコードは `demos/` ファイルの内容と一致します。各コードブロックを対応するファイル名で保存すればそのまま実行できます。`test_demos.py` と 2 つの Python 教材モジュールは同一ディレクトリに配置してください。
+
+{/* GENERATED_DEMOS_START */}
+
+### 17.1 `runtime_demo.py`
+
+```python
+"""Original teaching runtime. No LLM, network, shell execution, or Codex dependency."""
+import asyncio
+import json
+import sqlite3
+import time
+import uuid
+from dataclasses import dataclass, field
+
+
+class Journal:
+    def __init__(self, path=":memory:"):
+        self.db = sqlite3.connect(path)
+        self.db.execute("CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY, thread TEXT, kind TEXT, payload TEXT)")
+
+    def append(self, thread, kind, **payload):
+        with self.db:
+            cur = self.db.execute("INSERT INTO events(thread,kind,payload) VALUES(?,?,?)",
+                                  (thread, kind, json.dumps(payload, ensure_ascii=False)))
+        return cur.lastrowid
+
+    def replay(self, thread, after=0):
+        rows = self.db.execute("SELECT seq,kind,payload FROM events WHERE thread=? AND seq>? ORDER BY seq", (thread, after))
+        return [{"seq": s, "kind": k, **json.loads(p)} for s, k, p in rows]
+
+
+@dataclass
+class Turn:
+    id: str
+    revision: int = 0
+    state: str = "running"
+    updates: list = field(default_factory=list)
+
+
+@dataclass
+class Job:
+    thread: str
+    turn: str
+    revision: int
+    signature: str
+    task: asyncio.Task
+
+
+class Runtime:
+    def __init__(self, journal=None, concurrency=2):
+        self.journal = journal or Journal()
+        self.turns = {}
+        self.jobs = {}
+        self.slots = asyncio.Semaphore(concurrency)
+
+    def start(self, thread):
+        old = self.turns.get(thread)
+        if old and old.state == "running":
+            raise ValueError("thread already has an active turn")
+        turn = Turn(uuid.uuid4().hex)
+        self.turns[thread] = turn
+        self.journal.append(thread, "turn.started", turn_id=turn.id)
+        return turn.id
+
+    def active(self, thread, expected):
+        turn = self.turns[thread]
+        if turn.id != expected or turn.state != "running":
+            raise ValueError("stale or inactive turn")
+        return turn
+
+    def steer(self, thread, expected, text):
+        turn = self.active(thread, expected)
+        turn.revision += 1
+        turn.updates.append(text)
+        self.journal.append(thread, "steer.accepted", revision=turn.revision, text=text)
+        return turn.revision
+
+    def launch(self, thread, expected, call_id, name, args, timeout=1):
+        turn = self.active(thread, expected)
+        if name not in {"read_docs", "run_tests", "fail"}:
+            raise ValueError("tool not allowed")
+        delay = args.get("delay", 0.01)
+        if type(delay) not in (int, float) or not 0 <= delay <= 2:
+            raise ValueError("invalid delay")
+        signature = json.dumps([name, args], sort_keys=True)
+        key = (thread, expected, call_id)
+        if key in self.jobs:
+            if self.jobs[key].signature != signature:
+                raise ValueError("call_id reused with different arguments")
+            return key
+        revision = turn.revision
+
+        async def execute():
+            try:
+                # Timeout includes queue time. Demo tools are cancellable coroutines.
+                async with asyncio.timeout(timeout):
+                    async with self.slots:
+                        self.journal.append(thread, "tool.started", call_id=call_id)
+                        await asyncio.sleep(delay)
+                        if name == "fail":
+                            raise RuntimeError("synthetic tool error")
+                        value = {"source": "synthetic fixture", "tool": name, "revision": revision}
+                        self.journal.append(thread, "tool.completed", call_id=call_id)
+                        return {"ok": True, "value": value}
+            except TimeoutError:
+                self.journal.append(thread, "tool.timeout", call_id=call_id)
+                return {"ok": False, "error": "timeout"}
+            except asyncio.CancelledError:
+                self.journal.append(thread, "tool.cancelled", call_id=call_id)
+                raise
+            except Exception as exc:
+                self.journal.append(thread, "tool.failed", call_id=call_id)
+                return {"ok": False, "error": str(exc)}
+
+        self.jobs[key] = Job(thread, expected, revision, signature, asyncio.create_task(execute()))
+        return key
+
+    async def result(self, thread, expected, key):
+        self.active(thread, expected)
+        job = self.jobs[key]
+        if (job.thread, job.turn) != (thread, expected):
+            raise PermissionError("job belongs to another thread or turn")
+        value = await asyncio.shield(job.task)
+        current = self.active(thread, expected)
+        return {**value, "stale": job.revision != current.revision, "call_id": key[2]}
+
+    def commit(self, thread, expected, revision, proposal):
+        turn = self.active(thread, expected)
+        if revision != turn.revision:
+            raise ValueError("proposal predates user update; revalidate first")
+        # Records a proposal only; does not authorize or perform external writes.
+        self.journal.append(thread, "proposal.committed", revision=revision, proposal=proposal)
+
+    async def cancel(self, thread, expected):
+        turn = self.active(thread, expected)
+        turn.state = "cancelled"
+        tasks = [j.task for j in self.jobs.values() if (j.thread, j.turn) == (thread, expected)]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self.journal.append(thread, "turn.cancelled", turn_id=expected)
+
+    async def close(self):
+        tasks = [j.task for j in self.jobs.values()]
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self.journal.db.close()
+
+
+async def main():
+    started = time.perf_counter()
+    runtime = Runtime()
+    try:
+        turn = runtime.start("demo")
+        docs = runtime.launch("demo", turn, "call-docs", "read_docs", {"delay": 0.08})
+        tests = runtime.launch("demo", turn, "call-tests", "run_tests", {"delay": 0.12})
+        # Scripted stand-in for independent model work, not actual inference.
+        await asyncio.sleep(0.02)
+        runtime.journal.append("demo", "independent.work", text="先整理验收清单")
+        runtime.steer("demo", turn, "只给修复方案，不修改文件")
+        results = await asyncio.gather(runtime.result("demo", turn, docs), runtime.result("demo", turn, tests))
+        try:
+            runtime.commit("demo", turn, 0, "旧方案")
+        except ValueError as exc:
+            print("旧方案被拒绝:", exc)
+        runtime.commit("demo", turn, 1, "已按最新要求重新检查的只读方案")
+        print(json.dumps(results, ensure_ascii=False, indent=2))
+        print(json.dumps(runtime.journal.replay("demo"), ensure_ascii=False, indent=2))
+        print(f"elapsed={time.perf_counter()-started:.3f}s (synthetic, not a Codex benchmark)")
+    finally:
+        await runtime.close()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+### 17.2 `context_memory_demo.py`
+
+```python
+"""Original SQLite history/window/memory example; all inputs are fictional."""
+import json
+import sqlite3
+
+
+class Store:
+    def __init__(self, path=":memory:"):
+        self.db = sqlite3.connect(path)
+        self.db.row_factory = sqlite3.Row
+        self.db.executescript("""
+        CREATE TABLE IF NOT EXISTS history(
+          id INTEGER PRIMARY KEY, thread TEXT, unit TEXT, body TEXT);
+        CREATE TABLE IF NOT EXISTS evidence(
+          source TEXT PRIMARY KEY, project TEXT, key TEXT, value TEXT,
+          observed INTEGER, confirmed INTEGER, revoked INTEGER DEFAULT 0);
+        CREATE TABLE IF NOT EXISTS memory(
+          project TEXT, key TEXT, value TEXT, source TEXT, observed INTEGER,
+          PRIMARY KEY(project,key));
+        """)
+
+    def append_unit(self, thread, unit, messages):
+        # A unit contains a complete interaction, including call + output.
+        calls = {m["call_id"] for m in messages if m["type"] == "function_call"}
+        outputs = {m["call_id"] for m in messages if m["type"] == "function_call_output"}
+        if calls != outputs:
+            raise ValueError("unpaired tool interaction")
+        with self.db:
+            self.db.execute("INSERT INTO history(thread,unit,body) VALUES(?,?,?)",
+                            (thread, unit, json.dumps(messages, ensure_ascii=False)))
+
+    def window(self, thread, goal, keep_units=2):
+        if keep_units < 1:
+            raise ValueError("keep_units must be positive")
+        rows = list(self.db.execute("SELECT * FROM history WHERE thread=? ORDER BY id DESC LIMIT ?", (thread, keep_units)))
+        return {"pinned_goal": goal, "recent_units": [json.loads(r["body"]) for r in reversed(rows)]}
+
+    def search(self, thread, term):
+        if not term:
+            raise ValueError("empty search")
+        return [dict(r) for r in self.db.execute(
+            "SELECT * FROM history WHERE thread=? AND instr(lower(body),lower(?))>0 ORDER BY id LIMIT 5", (thread, term))]
+
+    def add_evidence(self, source, project, key, value, observed, confirmed):
+        with self.db:
+            self.db.execute("INSERT INTO evidence(source,project,key,value,observed,confirmed) VALUES(?,?,?,?,?,?)",
+                            (source, project, key, value, observed, int(confirmed)))
+
+    def revoke(self, source):
+        with self.db:
+            self.db.execute("UPDATE evidence SET revoked=1 WHERE source=?", (source,))
+
+    def consolidate(self):
+        # Small teaching version: deterministic extraction, single writer,
+        # full rebuild. Not Codex's model-based leased two-phase pipeline.
+        winners = {}
+        rows = self.db.execute("SELECT * FROM evidence WHERE confirmed=1 AND revoked=0 ORDER BY observed,source")
+        for row in rows:
+            winners[(row["project"], row["key"])] = row
+        # All-or-nothing replacement of the materialized memory view.
+        with self.db:
+            self.db.execute("DELETE FROM memory")
+            self.db.executemany("INSERT INTO memory VALUES(?,?,?,?,?)", [
+                (r["project"], r["key"], r["value"], r["source"], r["observed"])
+                for r in winners.values()])
+
+    def recall(self, project, now, max_age=30):
+        return [{**dict(r), "needs_refresh": now-r["observed"] > max_age}
+                for r in self.db.execute("SELECT * FROM memory WHERE project=? ORDER BY key", (project,))]
+
+
+def main():
+    store = Store()
+    try:
+        store.append_unit("a", "u1", [{"type": "message", "text": "错误码 E42 是旧登录模块的故障"}])
+        store.append_unit("a", "u2", [
+            {"type": "function_call", "call_id": "c1", "name": "test"},
+            {"type": "function_call_output", "call_id": "c1", "output": "failed"}])
+        store.append_unit("a", "u3", [{"type": "message", "text": "当前目标：只读诊断"}])
+        print("当前窗口:", json.dumps(store.window("a", "只读诊断"), ensure_ascii=False))
+        print("历史召回:", store.search("a", "E42"))
+        store.add_evidence("rollout-1", "project-A", "jdk", "8", 1, True)
+        store.add_evidence("rollout-2", "project-A", "jdk", "17", 10, True)
+        store.add_evidence("web-guess", "project-A", "jdk", "99", 11, False)
+        store.consolidate()
+        print("长期记忆:", store.recall("project-A", now=50))
+        store.revoke("rollout-2")
+        store.consolidate()
+        print("撤回来源后:", store.recall("project-A", now=50))
+    finally:
+        store.db.close()
+
+
+if __name__ == "__main__":
+    main()
+```
+
+### 17.3 `ptc_demo.mjs`
+
+```javascript
+// Trusted, handwritten orchestration demo. Node is NOT a sandbox.
+// No eval(), vm, generated-code execution, network, or external mutations.
+import assert from "node:assert/strict";
+const dataset = {
+  api: [{file: "api.py", severity: "high", evidence: "fixture:api:1"}],
+  ui: [{file: "ui.ts", severity: "low", evidence: "fixture:ui:1"}],
+};
+const tools = {
+  async scan({module}) {
+    if (!Object.hasOwn(dataset, module)) throw Error(`missing fixture: ${module}`);
+    return dataset[module];
+  },
+};
+const names = ["api", "ui", "unknown"];
+const results = await Promise.allSettled(names.map(module => tools.scan({module})));
+const failures = [];
+const findings = [];
+for (const [index, result] of results.entries()) {
+  if (result.status === "rejected") failures.push({module: names[index], error: result.reason.message});
+  else for (const row of result.value) {
+    if (!row.file || !row.evidence || !["low", "high"].includes(row.severity)) throw Error("bad tool output");
+    if (row.severity === "high") findings.push(row);
+  }
+}
+const output = {status: failures.length ? "partial" : "complete", findings, failures};
+assert.equal(output.status, "partial");
+assert.equal(output.findings.length, 1);
+assert.equal(output.failures.length, 1);
+console.log(JSON.stringify(output, null, 2));
+```
+
+### 17.4 `computer_loop_demo.py`
+
+```python
+class FakeApp:
+    def __init__(self):
+        self.state = {"filters_open": False, "query": ""}
+
+    def observe(self):
+        return dict(self.state)
+
+    def act(self, action):
+        if action == "open_filters":
+            self.state["filters_open"] = True
+        elif action == "type_penguin" and self.state["filters_open"]:
+            self.state["query"] = "penguin"
+        else:
+            raise ValueError("action not valid in current state")
+
+app = FakeApp()
+for step in range(5):
+    observation = app.observe()
+    if observation["filters_open"] and observation["query"] == "penguin":
+        print("verified:", observation)
+        break
+    action = "open_filters" if not observation["filters_open"] else "type_penguin"
+    app.act(action)
+else:
+    raise RuntimeError("task not completed within action budget")
+assert app.observe() == {"filters_open": True, "query": "penguin"}
+```
+
+### 17.5 `app_server_client.py`
+
+```python
+"""Real Codex stdio protocol probe. Creates no thread and calls no model."""
+import asyncio
+import json
+
+
+class RpcClient:
+    def __init__(self, process):
+        self.process = process
+        self.pending = {}
+        self.notifications = asyncio.Queue(maxsize=256)
+        self.serial = 0
+        self.reader = asyncio.create_task(self.read_loop())
+
+    async def send(self, message):
+        self.process.stdin.write((json.dumps(message)+"\n").encode())
+        await self.process.stdin.drain()
+
+    async def read_loop(self):
+        try:
+            while line := await self.process.stdout.readline():
+                message = json.loads(line)
+                if "method" in message and "id" in message:
+                    # Fail closed: this probe has no permission/approval UI.
+                    await self.send({"id": message["id"], "error": {
+                        "code": -32601, "message": "Probe cannot handle server requests"}})
+                elif "id" in message:
+                    future = self.pending.get(message["id"])
+                    if future and not future.done():
+                        if "error" in message:
+                            future.set_exception(RuntimeError(str(message["error"])))
+                        else:
+                            future.set_result(message.get("result"))
+                else:
+                    # Do not silently discard events when the consumer is slow.
+                    self.notifications.put_nowait(message)
+        except Exception as exc:
+            for future in self.pending.values():
+                if not future.done():
+                    future.set_exception(exc)
+        finally:
+            for future in self.pending.values():
+                if not future.done():
+                    future.set_exception(ConnectionError("app-server stream ended"))
+
+    async def call(self, method, params):
+        self.serial += 1
+        request_id = self.serial
+        future = asyncio.get_running_loop().create_future()
+        self.pending[request_id] = future
+        try:
+            await self.send({"id": request_id, "method": method, "params": params})
+            return await asyncio.wait_for(future, 15)
+        finally:
+            self.pending.pop(request_id, None)
+
+    async def close(self):
+        if self.process.returncode is None:
+            self.process.terminate()
+            try:
+                await asyncio.wait_for(self.process.wait(), 3)
+            except TimeoutError:
+                self.process.kill()
+                await self.process.wait()
+        await self.reader
+
+
+async def main():
+    process = await asyncio.create_subprocess_exec(
+        "codex", "app-server", "--listen", "stdio://",
+        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL)
+    client = RpcClient(process)
+    try:
+        result = await client.call("initialize", {
+            "clientInfo": {"name": "interview_probe", "title": "Interview Probe", "version": "0.1.0"}})
+        await client.send({"method": "initialized", "params": {}})
+        print("initialize succeeded; returned keys:", sorted(result))
+        print("No thread or model request was created.")
+    finally:
+        await client.close()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+### 17.6 `live_api.py`
+
+```python
+"""Real API examples, NOT executed during tutorial creation. Python stdlib only.
+Usage: OPENAI_API_KEY supplied privately in environment; python3 live_api.py MODE
+MODE: direct | ptc | async | compact. Requires a permitted gpt-6-astra API model.
+"""
+import concurrent.futures
+import json
+import os
+import sys
+import time
+import urllib.request
+
+MODEL = "gpt-6-astra"
+INSTRUCTIONS = "数据全是教学 fixture。保留 source。工具失败必须披露，不可编造结果。"
+
+
+def request(path, payload, stream=False):
+    key = os.environ.get("OPENAI_API_KEY")
+    if not key:
+        raise SystemExit("Set OPENAI_API_KEY in your environment; do not paste it into this file.")
+    req = urllib.request.Request("https://api.openai.com/v1/"+path,
+        data=json.dumps(payload).encode(), headers={
+            "Authorization": "Bearer "+key, "Content-Type": "application/json"})
+    response = urllib.request.urlopen(req, timeout=120)
+    if stream:
+        return response
+    with response:
+        return json.load(response)
+
+
+def scan(args):
+    if set(args) != {"module"} or args["module"] not in {"api", "ui"}:
+        raise ValueError("invalid module")
+    time.sleep(0.1)  # Synthetic external I/O.
+    return {"ok": True, "module": args["module"], "high": 2 if args["module"] == "api" else 0,
+            "source": "fictional-fixture-v1", "error": ""}
+
+
+def output_for(call):
+    try:
+        if call["name"] != "scan":
+            raise ValueError("unknown tool")
+        value = scan(json.loads(call["arguments"]))
+    except Exception as exc:
+        value = {"ok": False, "module": "", "high": 0,
+                 "error": str(exc), "source": "local-dispatcher"}
+    result = {"type": "function_call_output", "call_id": call["call_id"],
+              "output": json.dumps(value)}
+    if "caller" in call:
+        result["caller"] = call["caller"]  # Required for nested PTC resumption.
+    return result
+
+
+def definition(mode):
+    tool = {"type": "function", "name": "scan", "description": "读取指定模块的虚构风险统计。先检查 ok；失败时不可使用 high 作为统计结果。",
+            "strict": True, "parameters": {"type": "object", "properties": {
+                "module": {"type": "string", "enum": ["api", "ui"]}},
+                "required": ["module"], "additionalProperties": False}}
+    if mode == "async":
+        tool["async"] = True
+    if mode == "ptc":
+        tool["allowed_callers"] = ["programmatic"]
+        tool["output_schema"] = {"type": "object", "properties": {
+            "ok": {"type": "boolean"}, "error": {"type": "string"},
+            "module": {"type": "string"}, "high": {"type": "integer"},
+            "source": {"type": "string"}}, "required": ["ok", "error", "module", "high", "source"],
+            "additionalProperties": False}
+    return [tool] + ([{"type": "programmatic_tool_calling"}] if mode == "ptc" else [])
+
+
+def show(response):
+    for item in response.get("output", []):
+        if item["type"] == "message":
+            for part in item["content"]:
+                if part["type"] == "output_text":
+                    print(part["text"])
+                elif part["type"] == "refusal":
+                    print("REFUSAL:", part["refusal"])
+
+
+def checked(response):
+    if response.get("status") != "completed":
+        raise RuntimeError("Response did not complete: "+str(response.get("status")))
+
+
+def loop(mode):
+    tools = definition(mode)
+    history = [{"role": "user", "content": "查 api 和 ui 的虚构风险统计，计算 high 总数并注明来源。"}]
+    # Per-run cached results: avoid re-executing duplicate call IDs.
+    done = {}
+    for _ in range(12):
+        response = request("responses", {"model": MODEL, "store": False,
+            "input": history, "tools": tools, "instructions": INSTRUCTIONS,
+            "include": ["reasoning.encrypted_content"]})
+        checked(response)
+        history.extend(response["output"])  # Keep program, fingerprint, reasoning, etc.
+        calls = [x for x in response["output"] if x["type"] == "function_call"]
+        if not calls and any(x["type"] == "message" for x in response["output"]):
+            show(response)
+            return
+        # Serial client dispatch is intentional for this small direct/PTC demo.
+        # PTC can request concurrency; this application still owns execution policy.
+        for call in calls:
+            signature = json.dumps([call["name"], call["arguments"], call.get("caller")], sort_keys=True)
+            key = call["call_id"]
+            if key in done and done[key][0] != signature:
+                raise RuntimeError("call ID collision")
+            if key not in done:
+                done[key] = (signature, output_for(call))
+            history.append(done[key][1])
+    raise RuntimeError("Reached demo turn budget")
+
+
+def events(response):
+    data = []
+    for raw in response:
+        line = raw.decode().rstrip("\r\n")
+        if line.startswith("data:"):
+            data.append(line[5:].lstrip())
+        elif line == "" and data:
+            text = "\n".join(data)
+            data.clear()
+            if text != "[DONE]":
+                yield json.loads(text)
+
+
+def async_demo():
+    tools = definition("async")
+    jobs = {}
+    final = None
+    # Launch tools as complete call items arrive; don't wait for the entire stream.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        with request("responses", {"model": MODEL, "tools": tools, "stream": True,
+            "instructions": INSTRUCTIONS,
+            "input": "启动 api 模块查询，同时先解释什么是单元测试；结果到达后再解释风险统计。"}, stream=True) as response:
+            for event in events(response):
+                if event["type"] == "response.output_item.done":
+                    item = event["item"]
+                    if item["type"] == "function_call":
+                        if not item.get("async"):
+                            raise RuntimeError("Expected async call; check model and API support")
+                        if item["call_id"] in jobs:
+                            raise RuntimeError("Duplicate stream call item; reconcile before retry")
+                        jobs[item["call_id"]] = pool.submit(output_for, item)
+                elif event["type"] == "response.output_text.delta":
+                    print(event["delta"], end="", flush=True)
+                elif event["type"] == "response.completed":
+                    final = event["response"]
+                elif event["type"] in {"response.failed", "response.incomplete", "error"}:
+                    raise RuntimeError("Stream failed: "+event["type"])
+        if final is None or not jobs:
+            raise RuntimeError("No completed response or async call observed")
+        # Original call IDs, latest response ID. This demo makes no intermediate turns.
+        outputs = [future.result() for future in jobs.values()]
+        follow = request("responses", {"model": MODEL, "tools": tools, "tool_choice": "none",
+            "instructions": INSTRUCTIONS, "previous_response_id": final["id"], "input": outputs})
+        checked(follow)
+        print()
+        show(follow)
+
+
+def compact_demo():
+    history = [{"role": "user", "content": "项目约束：Python 标准库、只读分析、不要改文件。请复述。"}]
+    first = request("responses", {"model": MODEL, "store": False, "input": history,
+        "include": ["reasoning.encrypted_content"], "instructions": INSTRUCTIONS})
+    checked(first)
+    history.extend(first["output"])
+    compacted = request("responses/compact", {"model": MODEL, "input": history})
+    # Never extract just encrypted_content or prune the compact endpoint's output.
+    follow = request("responses", {"model": MODEL, "store": False, "instructions": INSTRUCTIONS,
+        "input": [*compacted["output"], {"role": "user", "content": "继续，列出必须遵守的三个约束。"}]})
+    checked(follow)
+    show(follow)
+
+
+if __name__ == "__main__":
+    mode = sys.argv[1] if len(sys.argv) > 1 else "help"
+    if mode in {"direct", "ptc"}:
+        loop(mode)
+    elif mode == "async":
+        async_demo()
+    elif mode == "compact":
+        compact_demo()
+    else:
+        print(__doc__)
+```
+
+### 17.7 `steering_api.mjs`
+
+```javascript
+// Real WebSocket API example; not live-tested. Install dependency: npm install ws
+// No client tools: demonstrates only accepted -> successor -> completed.
+import WebSocket from "ws";
+if (!process.env.OPENAI_API_KEY) throw Error("Set OPENAI_API_KEY privately in your environment");
+const socket = new WebSocket("wss://api.openai.com/v1/responses", {
+  headers: {Authorization: `Bearer ${process.env.OPENAI_API_KEY}`},
+  handshakeTimeout: 10000,
+});
+let parent;
+let successor;
+let finished = false;
+const timeout = setTimeout(() => fail("timed out; acceptance outcome may be unknown"), 120000);
+function fail(reason) {
+  if (finished) return;
+  finished = true;
+  clearTimeout(timeout);
+  console.error(reason);
+  process.exitCode = 1;
+  socket.close();
+}
+socket.on("open", () => socket.send(JSON.stringify({
+  type: "response.create", model: "gpt-6-astra",
+  input: "为面试练习设计一个任务管理工具，列出功能和交付计划。",
+})));
+socket.on("error", error => fail(error.message));
+socket.on("close", () => {if (!finished) fail("Connection ended before successor completion");});
+socket.on("message", raw => {
+  try {
+    const event = JSON.parse(raw.toString());
+    if (event.type === "response.created") {
+      if (!parent) {
+        parent = event.response.id;
+        socket.send(JSON.stringify({type: "response.steer", previous_response_id: parent,
+          input: "新增约束：一个人两天完成，只保留最小功能。"}));
+      } else {
+        successor = event.response.id;
+        console.log("steering committed to successor", successor);
+      }
+    } else if (event.type === "response.steer.accepted") {
+      console.log("queued, not yet applied", event.steer.id);
+    } else if (["response.steer.failed", "response.failed", "error"].includes(event.type)) {
+      fail(JSON.stringify(event));
+    } else if (event.type === "response.steer.pending") {
+      fail("Unexpected pending in no-tool demo; a tool-enabled client must fill required_input using saved results");
+    } else if (event.type === "response.incomplete" &&
+        !(event.response.id === parent && event.response.incomplete_details?.reason === "steered")) {
+      fail("Unexpected incomplete response");
+    } else if (event.type === "response.completed" && event.response.id === successor) {
+      for (const item of event.response.output) if (item.type === "message")
+        for (const part of item.content) console.log(part.text ?? part.refusal ?? "");
+      finished = true;
+      clearTimeout(timeout);
+      socket.close();
+    }
+  } catch (error) {fail(error.message);}
+});
+```
+
+### 17.8 `test_demos.py`
+
+```python
+import asyncio
+import tempfile
+import unittest
+from pathlib import Path
+from runtime_demo import Journal, Runtime
+from context_memory_demo import Store
+
+
+class RuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.r = Runtime()
+        self.t = self.r.start("a")
+
+    async def asyncTearDown(self):
+        await self.r.close()
+
+    async def test_steering_fences_stale_commit(self):
+        key = self.r.launch("a", self.t, "c", "read_docs", {"delay": 0.01})
+        self.r.steer("a", self.t, "read only")
+        result = await self.r.result("a", self.t, key)
+        self.assertTrue(result["stale"])
+        with self.assertRaises(ValueError):
+            self.r.commit("a", self.t, 0, "old")
+        self.r.commit("a", self.t, 1, "revalidated")
+
+    async def test_idempotency_and_argument_collision(self):
+        key = self.r.launch("a", self.t, "c", "read_docs", {})
+        self.assertEqual(key, self.r.launch("a", self.t, "c", "read_docs", {}))
+        with self.assertRaises(ValueError):
+            self.r.launch("a", self.t, "c", "run_tests", {})
+        await self.r.result("a", self.t, key)
+        self.assertEqual(sum(e["kind"] == "tool.started" for e in self.r.journal.replay("a")), 1)
+
+    async def test_owner_isolation(self):
+        other = self.r.start("b")
+        key = self.r.launch("a", self.t, "c", "read_docs", {})
+        with self.assertRaises(PermissionError):
+            await self.r.result("b", other, key)
+
+    async def test_timeout_and_failure(self):
+        slow = self.r.launch("a", self.t, "s", "read_docs", {"delay": 0.2}, timeout=0.01)
+        failed = self.r.launch("a", self.t, "f", "fail", {})
+        self.assertEqual((await self.r.result("a", self.t, slow))["error"], "timeout")
+        self.assertFalse((await self.r.result("a", self.t, failed))["ok"])
+
+    async def test_cancel_and_stale_turn(self):
+        key = self.r.launch("a", self.t, "c", "read_docs", {"delay": 0.2})
+        await asyncio.sleep(0)
+        await self.r.cancel("a", self.t)
+        self.assertTrue(self.r.jobs[key].task.cancelled())
+        with self.assertRaises(ValueError):
+            self.r.steer("a", self.t, "too late")
+
+    async def test_real_overlap_without_timing_threshold(self):
+        keys = [self.r.launch("a", self.t, str(i), "read_docs", {"delay": 0.02}) for i in range(2)]
+        await asyncio.gather(*(self.r.result("a", self.t, k) for k in keys))
+        kinds = [e["kind"] for e in self.r.journal.replay("a")]
+        second_start = [i for i, k in enumerate(kinds) if k == "tool.started"][1]
+        first_end = kinds.index("tool.completed")
+        self.assertLess(second_start, first_end)
+
+
+class StorageTests(unittest.TestCase):
+    def test_replay_after_restart(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = str(Path(d)/"log.db")
+            j = Journal(p)
+            first = j.append("a", "start")
+            j.append("b", "secret")
+            j.append("a", "done")
+            j.db.close()
+            j = Journal(p)
+            self.assertEqual([e["kind"] for e in j.replay("a", after=first)], ["done"])
+            j.db.close()
+
+    def test_window_keeps_pairs_and_archive(self):
+        s = Store()
+        try:
+            s.append_unit("a", "1", [{"type": "message", "text": "E42"}])
+            s.append_unit("a", "2", [{"type": "function_call", "call_id": "x"}, {"type": "function_call_output", "call_id": "x"}])
+            self.assertEqual(len(s.window("a", "goal", 1)["recent_units"][0]), 2)
+            self.assertEqual(len(s.search("a", "E42")), 1)
+            self.assertEqual(s.search("b", "E42"), [])
+            with self.assertRaises(ValueError):
+                s.append_unit("a", "bad", [{"type": "function_call", "call_id": "x"}])
+        finally:
+            s.db.close()
+
+    def test_memory_provenance_revocation_and_scope(self):
+        s = Store()
+        try:
+            s.add_evidence("a", "p", "jdk", "8", 1, True)
+            s.add_evidence("b", "p", "jdk", "17", 2, True)
+            s.add_evidence("c", "p", "jdk", "99", 3, False)
+            s.consolidate()
+            self.assertEqual(s.recall("p", 40)[0]["value"], "17")
+            self.assertTrue(s.recall("p", 40)[0]["needs_refresh"])
+            self.assertEqual(s.recall("other", 40), [])
+            s.revoke("b")
+            s.consolidate()
+            self.assertEqual(s.recall("p", 40)[0]["source"], "a")
+        finally:
+            s.db.close()
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
+```
+
+### 17.9 `test_live_api.py`
+
+```python
+"""Offline contract tests with fake responses. Never contacts OpenAI."""
+import contextlib
+import io
+import json
+import unittest
+from unittest.mock import patch
+import live_api as api
+
+
+class ApiContractTests(unittest.TestCase):
+    def test_ptc_output_keeps_caller_and_error_shape(self):
+        caller = {"type": "program", "caller_id": "program-1"}
+        call = {"name": "scan", "call_id": "c1", "arguments": '{"module":"bad"}', "caller": caller}
+        out = api.output_for(call)
+        self.assertEqual(out["caller"], caller)
+        data = json.loads(out["output"])
+        self.assertFalse(data["ok"])
+        self.assertEqual(set(data), set(api.definition("ptc")[0]["output_schema"]["required"]))
+
+    def test_modes_do_not_mix_async_and_ptc(self):
+        self.assertTrue(api.definition("async")[0]["async"])
+        self.assertNotIn("allowed_callers", api.definition("async")[0])
+        self.assertNotIn("async", api.definition("ptc")[0])
+
+    def test_sse_comments_crlf_multiline_and_done(self):
+        wire = b': keepalive\r\ndata: {"type":\r\ndata: "demo"}\r\n\r\ndata: [DONE]\r\n\r\n'
+        self.assertEqual(list(api.events(io.BytesIO(wire))), [{"type": "demo"}])
+
+    def test_compact_preserves_all_returned_items(self):
+        packed = [{"type": "message", "role": "user", "content": "retained"},
+                  {"type": "compaction", "encrypted_content": "opaque"}]
+        replies = [{"status": "completed", "output": []}, {"output": packed},
+                   {"status": "completed", "output": []}]
+        with patch.object(api, "request", side_effect=replies) as mocked:
+            api.compact_demo()
+        self.assertEqual(mocked.call_args_list[2].args[1]["input"][:-1], packed)
+
+    def test_async_dispatch_before_stream_finishes(self):
+        final = {"id": "r1", "status": "completed", "output": []}
+        call = {"type": "function_call", "name": "scan", "call_id": "c1",
+                "arguments": '{"module":"api"}', "async": True}
+        submitted = []
+
+        class ImmediatePool:
+            def __init__(self, **kwargs):
+                pass
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                pass
+            def submit(self, fn, item):
+                submitted.append(item["call_id"])
+                class Future:
+                    def result(self):
+                        return {"type": "function_call_output", "call_id": "c1", "output": "{}"}
+                return Future()
+
+        def stream(_):
+            yield {"type": "response.output_item.done", "item": call}
+            self.assertEqual(submitted, ["c1"])
+            yield {"type": "response.completed", "response": final}
+
+        with patch.object(api, "request", side_effect=[io.BytesIO(), final]) as mocked, \
+             patch.object(api, "events", side_effect=stream), \
+             patch.object(api.concurrent.futures, "ThreadPoolExecutor", ImmediatePool), \
+             contextlib.redirect_stdout(io.StringIO()):
+            api.async_demo()
+        continuation = mocked.call_args_list[1].args[1]
+        self.assertEqual(continuation["previous_response_id"], "r1")
+        self.assertEqual(continuation["input"][0]["call_id"], "c1")
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
+```
+
+{/* GENERATED_DEMOS_END */}

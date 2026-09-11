@@ -1,0 +1,224 @@
+---
+title: "Benchmarks, competitor comparison, and interview delivery"
+description: "Discuss evaluations, legacy harnesses, Claude, and interview answers with reproducible evidence boundaries."
+---
+
+## 12. Benchmarks: why does "good score" not directly prove the harness is the strongest?
+
+### 12.1 A score measures a combination
+
+```text
+task performance = f(model, harness, tools, prompt, budget, environment, task set, randomness)
+```
+
+Screenshots compress the attribution of Terminal-Bench and various evaluations into casual claims. The official benchmark paper we found describes terminal-environment tasks and evaluation, but we could not find a reproducible entry point for the "Runta harness test" the screenshot points to. This article therefore does not repeat the ranking or use "someone's test" as a formal source. [Terminal-Bench 2.0 paper](https://arxiv.org/abs/2601.11868)
+
+When we opened the old 2.0 leaderboard link this time, the page redirected to a new-version presentation without returning the full score table. Historical rankings from search excerpts therefore cannot be treated as the current 2026-09-10 leaderboard. If you want to cite the ranking as of a screenshot's date, you need a snapshot from that day plus submission traces and configuration.
+
+### 12.2 The most basic 2×2 comparison
+
+| | Baseline harness H0 | New harness H1 |
+|---|---|---|
+| Model M0 | S00 | S01 |
+| Model M1 | S10 | S11 |
+
+```text
+harness gain on M0 = S01 - S00
+harness gain on M1 = S11 - S10
+interaction term  = (S11 - S10) - (S01 - S00)
+```
+
+If you only look at `S11-S00`, you cannot tell whether the improvement comes from the model, the harness, or the fit between them. The interaction term is also only evidence under this experimental condition, and cannot be extrapolated to all tasks.
+
+Do further per-component ablations: turn off async, turn off PTC, turn off memory, swap the compaction strategy. Hold the rest fixed and compare completion rate, error type, latency, and cost.
+
+### 12.3 Which variables must be controlled?
+
+- Model ID/snapshot, reasoning effort, input prompt, tool definitions, and permissions.
+- Repo commit, dependency environment, test commands, CPU/memory, and network conditions.
+- Overall time limit, token/cost budget, maximum tool calls, and retry rules.
+- Whether existing caches and memory are used; whether memory comes from independent training/development tasks.
+- Repeat count, failure classification, output artifacts, and auditable traces.
+
+Memory evaluation especially needs to prevent test leakage: you cannot first write the answers of the test tasks into memory, then attribute the high score to "better learning".
+
+### 12.4 Do not conflate pass@1, pass@k, and average score across multiple runs
+
+`pass@1` looks at a single attempt; `pass@k` looks at whether at least one out of multiple candidates succeeds. For `c` successes in `n` samples, a common estimator is:
+
+```text
+pass@k = 1 - C(n-c, k) / C(n, k)    (under appropriate sampling assumptions)
+```
+
+Running `k` times does not automatically mean the leaderboard reports `pass@k`; it might report the average success rate. You must check the scoring definition for that benchmark.
+
+### 12.5 Metrics real projects should track
+
+| Metric | How to compute/observe | Guarding against misjudgment |
+|---|---|---|
+| Task success rate | Independent acceptance harness or human review | The model's self-evaluation is not ground truth |
+| Evidence completeness | Whether conclusions have matching tool/artifact evidence | A citation does not mean the citation supports the conclusion |
+| Steering retention | Whether the follow-up plan matches the new constraint | ACK alone does not count as success |
+| Failure recovery rate | Whether work can continue after a disconnect or timeout | Continuing to output does not mean recovering the correct state |
+| p50/p95 latency | From acceptance to real acceptance completion | Fast first token does not mean the task is fast |
+| Cost per successful task | Total cost / number of successes | Do not hide the cost of failed tasks |
+| Memory accuracy | Correct scope, correct facts, verifiable sources | High hit rate may just be spurious recall |
+| Safety violation rate | Unauthorized actions, cross-task leakage | A correct answer does not offset disallowed side effects |
+
+### 12.6 What can you claim with the tests in this tutorial?
+
+You can claim: "I implemented and verified async task registration, call deduplication, stale-plan invalidation, cancellation, separation of history and working set, and a memory view whose sources can be revoked."
+
+You cannot claim: "I reproduced Codex's model capability", "My harness leads on real coding benchmarks", or "The two-phase memory system is proven effective long-term." Those require a real model, an independent task set, and longer validation.
+
+<a id="comparison"></a>
+## 13. A fair comparison with legacy harnesses and Claude
+
+### 13.1 "Legacy" here means the basic serial loop, not every existing framework
+
+Mature in-house harnesses, workflow engines, and other agent products can also implement concurrency, events, persistence, permissions, and retrieval. These mechanisms were not all invented by Codex. The real difference lies in integration quality, default experience, protocol details, model fit, and outcomes.
+
+| Dimension | This article's basic serial harness | Verifiable direction in Codex/API | Engineering cost or applicability boundary |
+|---|---|---|---|
+| Client | Loop runs inside the client | App Server abstracts a rich client interface | Version, connection, shared failure |
+| Task state | In-memory lists / current call stack | Thread, Turn, Item, and events | Recovery must handle in-flight side effects |
+| Tool scheduling | One call, one wait | Concurrency, cell yield/wait, API async | Dependency identification, output attribution, pending management |
+| User interruption | Wait until the current turn ends | App turn steering / API response steering | Distinguish accepted vs. applied; no automatic rollback |
+| Multi-step tools | Model orchestrates step by step | PTC / Code Mode | Program sandbox, tool allowlist, partial failure |
+| Long context | Full append, simple truncation | Compaction, new window, history retrieval | Source/permission preservation and recall quality |
+| Long-term memory | Handwritten memory file or none | Background extraction and consolidation, read capability | Contamination, conflicts, quota, and expiration handling |
+| Computer use | Bolt on a click tool yourself | Supported model plus execution-environment closed loop | State observation, action authorization, terminal-state verification |
+| Evaluation | Judge whether output looks correct | Can evaluate tools, tasks, and system results | No single protocol automatically guarantees a high score |
+
+### 13.2 Claude is not the same as "a simple serial harness"
+
+Current Claude Agent SDK documentation covers tool execution, parallelism, permissions, automatic compaction, sessions, hooks, and more. Anthropic has also published a long-task harness, handoff artifacts, and a managed-agents layered design. This tutorial therefore does not adopt "the other side has no architecture" as a conclusion. See the [Claude Agent loop](https://code.claude.com/docs/en/agent-sdk/agent-loop) and the [long-task harness article](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents).
+
+This article does not have the full current internal source of Claude Code, so it does not judge whether Claude is equivalent to Codex at every cancellation point, steering protocol, or isolation boundary. **Similar capability names do not prove identical implementations, and the absence of public source does not prove the absence of capability.**
+
+### 13.3 Is Plan Mode outdated?
+
+Plan Mode can be a work phase: first understand, clarify, and design, then execute. Its value depends on the task, not on release date.
+
+```text
+Simple spelling fix: forcing a long plan is just overhead.
+Cross-service migration: confirming contracts, dependencies, and rollback paths first reduces rework.
+New evidence appears mid-task: the plan should update; do not treat the old plan as an immutable script.
+```
+
+A good design uses an editable plan state plus necessary approval points. Plan Mode is not restricted to prompt-only implementations, nor does it require multiple agents. UI state, permission policy, and runtime contracts can all contribute.
+
+### 13.4 When is it not worth building a complex host from the start?
+
+If there is only a single trusted tool, tasks finish within seconds, and no persistent session is needed, a clear function-call loop may be enough.
+
+Only after real pain points appear — long tool waits, multi-client collaboration, recovery requirements, history exceeding the window, or security isolation — should you gradually add a task registry, event log, window management, and persistence. The new failure modes introduced by a complex system can cost more than the tokens they save.
+
+<a id="interview"></a>
+## 14. Interview delivery: how to explain this concretely and credibly
+
+### 14.1 90-second answer template
+
+> What I find worth studying about Codex is that it turns the coding agent from "model plus tool loop" into an execution system that supports sustained interaction. The first layer is the App Server, which separates the client from the execution host with protocols for threads, turns, and items. The second layer is scheduling: slow tools can go pending, the model continues on independent work, and results are reconciled through explicit call IDs. The third layer is runtime adjustment; steering distinguishes update-accepted from update-applied, and it does not undo completed side effects. The fourth layer is context and memory, which manage the current working set, full history, and long-term experience separately. PTC lets code handle batch tool orchestration and deterministic computation. The gains must be verified through success rate, latency, cost, and recovery ability; you cannot infer architectural superiority from branding or a single leaderboard.
+
+### 14.2 5-minute answer order
+
+1. Use "fix a failing test" to explain the basic loop, and point out tool waits and context growth problems.
+2. Draw the six pieces: client, App Server, Runtime, model, tools, state store.
+3. Give the example of overlapping CI queries with README analysis and explain async and the dependency graph.
+4. Add "the user says 'analysis only' mid-turn" and explain revisions and side-effect boundaries.
+5. Contrast PTC's program-side aggregation with step-by-step model calls.
+6. Distinguish history, window, compaction, and long-term memory.
+7. Close with the tests you actually ran, being explicit that real models and benchmarks have not yet been tested.
+
+### 14.3 Common follow-ups and key answer points
+
+**Q1: What is the relationship between a harness and an agent framework?**
+
+A framework is a construction tool; a harness is the actual runtime system carrying the strategy and interacting with the model. You can build a harness with a framework or without one. The key is where the loop, state, permissions, and result verification live.
+
+**Q2: Is App Server just wrapping the CLI as an HTTP service?**
+
+Just wrapping HTTP does not automatically get you thread state, bidirectional approvals, events, recovery, and tool lifecycle. The value of App Server is execution contract and state semantics, not just a transport protocol.
+
+**Q3: Why not launch a process per task?**
+
+You can, especially when emphasizing isolation. A shared host mainly buys reuse and unified management, but you pay the costs of isolation and shared failures. Measure memory, startup latency, and blast radius.
+
+**Q4: Is `asyncio.gather` equivalent to Astra async inference?**
+
+No. `gather` only says the application runs coroutines concurrently; whether the model can proceed while results are missing depends on the model and the protocol. The local demo in the tutorial only proves the former plus pending management.
+
+**Q5: Why do actions still happen after the user stops the task?**
+
+Only the generation stream may have been stopped without cancelling tools or subprocesses; some actions may already be committed to a remote system. You need to track cancellation propagation, subprocess groups, remote task handles, and commit timing.
+
+**Q6: How do you guarantee tools run exactly once?**
+
+Network requests alone cannot generally guarantee this. The more common pattern is at-least-once delivery plus idempotency keys, execution logs, and result caches; external services must also support idempotency or reconciliation. A local dedup dictionary is only valid within the current process lifetime.
+
+**Q7: Why is there an `expectedTurnId`?**
+
+To prevent a client with a stale view from pushing a new message onto the wrong turn. It is a concurrency-control guard, not interface decoration.
+
+**Q8: Does steering rewrite reasoning that is already being generated?**
+
+What is confirmable is that the server accepts the update and stitches it into a subsequent response. You should not claim that already-sampled tokens or internal reasoning state are rewritten in place. Emitted text and executed actions still exist.
+
+**Q9: Does PTC always save tokens?**
+
+Not always. When there is a lot of data and it is compressible, the gain is obvious; for a single simple call, the cost of program generation, execution, and error handling can offset the benefit. Measure per task shape.
+
+**Q10: Why can't you use Node's `vm` to execute model code as a sandbox?**
+
+Language-context isolation is not the same as a safe execution environment. You should explicitly rely on OS/process/container isolation, resource budgets, and tool permissions. This tutorial does not claim Node `vm` is a safe sandbox.
+
+**Q11: Will MCP be replaced by PTC?**
+
+Usually no; they are not at the same layer. MCP connects services, PTC orchestrates calls. A single tool call inside a program can be served over MCP.
+
+**Q12: Why can work continue after a context window switch?**
+
+The environment is not reset; goals, notes, persistent history, and on-demand retrieval provide continuation. But you must verify key constraints and tool pairing, not just clear the message array.
+
+**Q13: Is compaction lossless?**
+
+Not a property you can casually claim. The API's opaque compaction items are designed to continue a task, not to serve as a reversible archive of original text. Preserve historical sources when you need originals.
+
+**Q14: Is window switching the same as sliding-window attention?**
+
+No. The former is application-layer context selection; the latter is a design of the model's attention range. Similar names do not mean identical implementation.
+
+**Q15: How does memory relate to RAG?**
+
+RAG is a way to retrieve and provide context; memory is a mechanism for forming reusable information from experience. Memory can be read via RAG, but it also needs write, consolidation, conflict, expiration, and deletion policies.
+
+**Q16: How do you prevent cross-project memory contamination?**
+
+Memory keys carry a project/workspace scope. Authorize and filter before ranking on read. Do not first retrieve across users and then rely on the model to "not say it out loud."
+
+**Q17: Does dreaming make the model smarter over time?**
+
+External memory may reduce repeated exploration later, but it does not automatically train weights. Effectiveness should be measured by follow-up task benefit and error inheritance, not by equating file updates with permanent model capability gain.
+
+**Q18: The model says the tests passed — how do you judge?**
+
+Read the actual test output, exit code, and matching code version, then cross-check against the covered acceptance requirements. A generated summary, a command finishing, and real correctness are different evidence layers.
+
+**Q19: How does Code Mode preserve partial failures?**
+
+Read-only aggregation can use `allSettled`, mark the result as partial, and keep the failure list. Write operations need idempotency, transactions, or compensation; you cannot roll back through Promise aggregation.
+
+**Q20: What experiments prove a new harness is better than an old one?**
+
+Run paired experiments with model, tools, tasks, and budget held fixed; report confidence intervals across repeats and run functional ablations. Real success rate is the primary metric, with cost, latency, and violation counts also reported.
+
+### 14.4 A real project story you can tell
+
+After finishing the exercises in this article, you can say:
+
+> I built a teaching agent runtime in Python with asyncio, splitting tool execution from synchronous calls into a pending job registry, isolating results by thread, turn, and call ID, and adding revision checks for user updates. I implemented event-log replay and layered history/memory in SQLite. Tests verify concurrency, cancellation, timeout, call deduplication, stale-plan rejection, and source revocation. I also connected and verified the initialization protocol of the local Codex App Server. The API wiring for model-level async, PTC, and steering is ready, but I still need an actual end-to-end API evaluation.
+
+Do not write it as "responsible for building a production-grade Codex-equivalent underlying architecture", and do not package this article's local tests as performance proof of a complex system.
+
+<a id="run"></a>

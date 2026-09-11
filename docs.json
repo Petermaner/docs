@@ -15,10 +15,6 @@
         "default": true,
         "pages": [
           {
-            "group": "开始使用",
-            "pages": []
-          },
-          {
             "group": "指南",
             "pages": [
               "zh/guides/response-api"
@@ -45,16 +41,24 @@
         "language": "en",
         "pages": [
           {
-            "group": "Getting Started",
-            "pages": [
-              "index",
-              "quickstart"
-            ]
-          },
-          {
             "group": "Guides",
             "pages": [
               "guides/response-api"
+            ]
+          },
+          {
+            "group": "Codex and Harness",
+            "pages": [
+              "guides/codex-harness-overview",
+              "guides/codex-harness-runtime",
+              "guides/codex-harness-async",
+              "guides/codex-harness-code-mode",
+              "guides/codex-harness-context-memory",
+              "guides/codex-harness-computer-use",
+              "guides/codex-harness-evaluation",
+              "guides/codex-harness-run",
+              "guides/codex-harness-sources",
+              "guides/codex-harness-code"
             ]
           }
         ]
@@ -63,16 +67,50 @@
         "language": "jp",
         "pages": [
           {
-            "group": "はじめに",
-            "pages": [
-              "jp/index",
-              "jp/quickstart"
-            ]
-          },
-          {
             "group": "ガイド",
             "pages": [
               "jp/guides/response-api"
+            ]
+          },
+          {
+            "group": "Codex と Harness",
+            "pages": [
+              "jp/guides/codex-harness-overview",
+              "jp/guides/codex-harness-runtime",
+              "jp/guides/codex-harness-async",
+              "jp/guides/codex-harness-code-mode",
+              "jp/guides/codex-harness-context-memory",
+              "jp/guides/codex-harness-computer-use",
+              "jp/guides/codex-harness-evaluation",
+              "jp/guides/codex-harness-run",
+              "jp/guides/codex-harness-sources",
+              "jp/guides/codex-harness-code"
+            ]
+          }
+        ]
+      },
+      {
+        "language": "zh-CN",
+        "pages": [
+          {
+            "group": "指南",
+            "pages": [
+              "zh-CN/guides/response-api"
+            ]
+          },
+          {
+            "group": "Codex 与 Harness",
+            "pages": [
+              "zh-CN/guides/codex-harness-overview",
+              "zh-CN/guides/codex-harness-runtime",
+              "zh-CN/guides/codex-harness-async",
+              "zh-CN/guides/codex-harness-code-mode",
+              "zh-CN/guides/codex-harness-context-memory",
+              "zh-CN/guides/codex-harness-computer-use",
+              "zh-CN/guides/codex-harness-evaluation",
+              "zh-CN/guides/codex-harness-run",
+              "zh-CN/guides/codex-harness-sources",
+              "zh-CN/guides/codex-harness-code"
             ]
           }
         ]

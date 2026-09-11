@@ -1,0 +1,121 @@
+---
+title: "PTC, Code Mode, and MCP"
+description: "Compare programmatic tool calling, Code Mode, and MCP by responsibility and composition."
+---
+
+## 7. PTC / Code Mode: why let the model write code to call tools?
+
+### 7.1 What does classic one-tool-at-a-time cost?
+
+Task: "Read the risk results from three modules, filter high risk, and merge duplicates."
+
+The basic approach makes the model participate again and again: request a tool → receive a large JSON → generate the next request → receive data → summarize item by item. For filtering, sorting, grouping, and numeric computation, the model is neither the cheapest nor the most reliable executor.
+
+PTC hands the deterministic steps to a piece of code:
+
+```javascript
+const results = await Promise.all([
+  tools.scan({module: "api"}),
+  tools.scan({module: "ui"})
+]);
+const count = results.reduce((sum, item) => sum + item.high, 0);
+text({highCount: count, sources: results.map(item => item.source)});
+```
+
+The code is orchestrating tools. It is not retraining the model. Tools can still come from MCP, plain functions, shell, and other sources.
+
+### 7.2 How control flow and data flow change
+
+```text
+Direct calls: the model controls each step; large intermediate data flows into model context repeatedly
+Program calls: the model generates one bounded program; code controls loops/parallelism/filters; summary goes back to the model
+```
+
+If `n` results each take `S` tokens, showing them all directly is roughly `n*S` in result load. If code compresses that to `R` tokens, what the model sees can be closer to `R`, plus the program, tool definitions, and protocol overhead. **The raw tool I/O still exists. Sending less to the model does not mean the system stops processing that data.**
+
+### 7.3 The difference between OpenAI API PTC and Codex Code Mode
+
+The API PTC documentation describes managed JavaScript execution: enable `programmatic_tool_calling`, set `allowed_callers` per tool, and the program runs in an isolated V8 environment. It does not have general Node, file system, or network capabilities. Your app's tools are still executed by your app. [Programmatic Tool Calling](https://developers.openai.com/api/docs/guides/tools-programmatic-tool-calling)
+
+The Codex public source also has local and remote Code Mode Host, runtime, session, cell, and execute/wait modules. These reflect a similar "code orchestrates tools" idea, but they are not directly interchangeable with the API PTC interface. The source has explicit session stored values and cell lifecycle. You cannot claim API PTC also guarantees cross-program global variable persistence. [Code Mode runtime](https://github.com/openai/codex/blob/ddea03ad049142943bdbf13e937b1d67e8c1ba0c/codex-rs/code-mode-runtime/src/runtime/mod.rs), [Session runtime](https://github.com/openai/codex/blob/ddea03ad049142943bdbf13e937b1d67e8c1ba0c/codex-rs/code-mode-runtime/src/session_runtime/mod.rs)
+
+| Dimension | Direct function call | API PTC | Codex Code Mode |
+|---|---|---|---|
+| Main model output | Tool name and parameters | The program plus tool-call items | Input for a code cell |
+| Control flow | Model / host outer loop | JavaScript inside a managed program | Cells / runtime in a host |
+| External capability | Registered tools | Tools the program is allowed to call | Tools exposed by the current execution context |
+| Execution state | One call plus result | Program plus call chain | Cells, yield, wait, termination, and so on |
+| State reuse | Via conversation or external storage | Do not assume plain JS globals survive across programs | Follow the current host/session protocol |
+| Authorization | Check before tool execution | Nested tools still need checks | Nested tools still need checks |
+
+### 7.4 How is a V8 isolate wired to the tools?
+
+The following is an outline based on the public code structure, with transport details omitted:
+
+```text
+Model submits code
+    ↓
+Host creates/manages the cell and prepares metadata for allowed tools
+    ↓
+V8 executes tools.read(...)
+    ↓
+The bridge layer creates a Promise and emits a ToolCall event
+    ↓
+The external executor checks permissions and runs the tool
+    ↓
+ToolResponse / ToolError returns to the runtime
+    ↓
+Resolves/rejects the corresponding Promise; JavaScript continues
+    ↓
+text/image output, or yield, or a final Result
+```
+
+The pinned source shows tool responses, errors, timeouts, and termination in `RuntimeCommand`, and ToolCall, Pending, YieldRequested, Result in `RuntimeEvent`. This shows that beyond the isolate there is host scheduling and message bridging. "Uses V8" only describes one layer.
+
+A V8 isolate is not a complete OS sandbox. To keep untrusted programs from abusing it, you also have to restrict which tools they can reach, call counts, output size, CPU/memory, execution time, network, and file permissions. Especially, you cannot hand it an unrestricted shell and then claim "it can only use safe APIs."
+
+### 7.5 The fields most easily missed when wiring the real API
+
+Nested `function_call` items carry caller metadata. When you return `function_call_output`, keep the `caller` field the call carried so the server can restore the correct program. For stateless continuation, you also need to keep the full returned items — program, fingerprint, reasoning — not just concatenate output text.
+
+```python
+result_item = {
+    "type": "function_call_output",
+    "call_id": call["call_id"],
+    "output": json.dumps(tool_result),
+}
+if "caller" in call:
+    result_item["caller"] = call["caller"]
+```
+
+See `live_api.py ptc` for the full example. It hands the program returned by the API back to the managed runtime to continue, and **does not use `eval()` locally to execute model code**.
+
+### 7.6 Why does the local demo use allSettled?
+
+`Promise.all` rejects immediately on the first rejection, but the remaining work is not automatically cancelled. If the caller only sees the top-level exception, it may both lose partial results and mistakenly conclude no action happened.
+
+`ptc_demo.mjs` uses `allSettled` to collect every result, keeps sources, and marks missing modules as `partial`. This suits read-only aggregation. It does not mean every task should use `allSettled`. If the second step is meaningless once the first fails, stop by dependency order. For write operations, prefer clear commit boundaries.
+
+### 7.7 PTC and MCP
+
+MCP describes how Host, Client, and Server exchange capabilities and data. PTC describes how the model organizes calls via a program. One is a connection protocol, the other is an execution and orchestration mode. They compose. [MCP architecture spec](https://modelcontextprotocol.io/specification/2025-11-25/architecture)
+
+```text
+Model → program → tools.crm.search(...) → MCP client → MCP server → CRM
+```
+
+| Question | Mainly answered by MCP | Mainly answered by PTC |
+|---|---|---|
+| How are tools discovered and connected? | Yes | Usually relies on an external discovery mechanism |
+| How are tool inputs and outputs described? | Provides protocol conventions | Uses tool descriptions and available schemas |
+| How do many calls loop, filter, and aggregate? | Does not specify the whole agent control flow | The program owns this |
+| Who decides whether the model has finished the task? | Not guaranteed automatically by the protocol | Not guaranteed automatically by the program call either |
+| Can it bypass permissions? | Should be enforced by host and server | Should not bypass the original tool controls |
+
+Anthropic's public writing also discusses combining code execution with MCP to cut context load from tool descriptions and intermediate data. So "only Codex understands calling tools with code" does not hold. [Anthropic: Code execution with MCP](https://www.anthropic.com/engineering/code-execution-with-mcp)
+
+### 7.8 Interview answer
+
+> PTC moves deterministic control flow and data processing out of step-by-step model dialogue into a program. It suits batch read-only queries, filtering, aggregation, and predictable dependency chains. The gain is mainly fewer model round-trips and less intermediate context, not the removal of tool execution cost. It is orthogonal to MCP, and every nested call still needs permission, budget, and audit.
+
+<a id="context"></a>
