@@ -1,0 +1,150 @@
+---
+title: "Response API 入門：次世代モデル対話インターフェース詳解"
+sidebarTitle: "Response API"
+description: "OpenAI Response API のコアコンセプト、Chat Completions との違い、ユースケースおよびベストプラクティスを詳しく解説します。"
+---
+
+Response API は OpenAI が発表した次世代のモデル対話インターフェースで、状態を持つマルチターン・マルチツール連携型の AI アプリケーションを構築するために設計されています。従来の Chat Completions API と比べて、会話状態、ツール呼び出し、推論プロセス、マルチモーダル入力を一つのよりシンプルで強力なプログラミングモデルに統合しています。
+
+## Response API とは
+
+Response API（`/v1/responses`）は、OpenAI が 2025 年にリリースした統一モデル呼び出しインターフェースです。これまで Chat Completions、Assistants、Tools など複数の API に分散していた機能を統合し、開発者は 1 回の呼び出しで次のことを実現できます。
+
+- マルチターン対話とコンテキスト管理
+- 組み込みツール呼び出し（Web 検索、ファイル検索、コードインタープリター、コンピューター操作など）
+- カスタム関数呼び出し
+- 推論モデル（o シリーズなど）の思考連鎖の出力
+- テキスト、画像、音声などのマルチモーダル入出力
+
+## Chat Completions との主な違い
+
+<CardGroup cols={2}>
+  <Card title="ステートフル vs ステートレス" icon="database">
+    Chat Completions は毎回すべての履歴メッセージを送る必要があります。Response API は `previous_response_id` で前回のレスポンスを直接引き継ぎ、サーバー側が自動的にコンテキストを管理します。
+  </Card>
+  <Card title="統一された入力構造" icon="layers">
+    Chat Completions は `messages` 配列を使います。Response API は `input` フィールドを使い、文字列、メッセージ配列、画像やファイルを含むマルチモーダル構造を受け付けます。
+  </Card>
+  <Card title="組み込みツール" icon="puzzle">
+    Response API は `web_search`、`file_search`、`code_interpreter`、`computer_use` などのマネージドツールをネイティブにサポートしており、自前で実装する必要がありません。
+  </Card>
+  <Card title="推論の透過化" icon="lightbulb">
+    o1、o3 などの推論モデルでは、Response API が出力の中に `reasoning` 項目を明示的に返すため、追跡やデバッグが容易になります。
+  </Card>
+</CardGroup>
+
+## 最もシンプルな呼び出し例
+
+```bash cURL
+curl https://api.openai.com/v1/responses \
+  -H "Authorization: Bearer $OPENAI_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-4.1",
+    "input": "量子もつれとは何かを一文で説明してください。"
+  }'
+```
+
+レスポンス構造の主なフィールド：
+
+- `id`：このレスポンスの一意な ID。後続の呼び出しで引き継ぎに使えます
+- `output`：モデルが生成したコンテンツ項目の配列（テキスト、ツール呼び出し、推論など）
+- `output_text`：すべてのテキストを連結した便利フィールド
+- `usage`：トークン消費量の統計
+
+## マルチターン対話：手動での履歴連結にさようなら
+
+従来の書き方ではターンごとに完全な `messages` を送る必要がありました。Response API では前回の `id` を渡すだけで済みます。
+
+```python Python
+from openai import OpenAI
+
+client = OpenAI()
+
+first = client.responses.create(
+    model="gpt-4.1",
+    input="SF 小説を 3 冊おすすめしてください。"
+)
+
+second = client.responses.create(
+    model="gpt-4.1",
+    previous_response_id=first.id,
+    input="そのうち最も短いものはおおよそ何文字ですか？"
+)
+
+print(second.output_text)
+```
+
+サーバー側が前ターンのコンテキストを自動的に付加するため、クライアントロジックがシンプルになり、重複したトークン課金も減らせます。
+
+## 組み込みツール：一行で Web 検索を有効化
+
+```python Python
+response = client.responses.create(
+    model="gpt-4.1",
+    tools=[{"type": "web_search"}],
+    input="2026 年のノーベル物理学賞受賞者は誰ですか？"
+)
+
+print(response.output_text)
+```
+
+検索サービスの構築、Web ページのスクレイピング、引用の組み立てを自前で行う必要はなく、モデルがいつ検索し、どのように統合するかを自動で判断します。同様に、`file_search`（アップロードファイルへの RAG）、`code_interpreter`（サンドボックスでのコード実行）、`computer_use`（ブラウザ／デスクトップ操作）も利用できます。
+
+## ストリーミング出力
+
+Response API はイベントストリーム（Server-Sent Events）で構造化されたイベントを返すため、Chat Completions の delta より解析しやすくなっています。
+
+```python Python
+stream = client.responses.create(
+    model="gpt-4.1",
+    input="秋についての短い詩を書いてください。",
+    stream=True,
+)
+
+for event in stream:
+    if event.type == "response.output_text.delta":
+        print(event.delta, end="", flush=True)
+```
+
+代表的なイベントタイプには `response.created`、`response.output_text.delta`、`response.tool_call.created`、`response.completed` などがあります。
+
+## Response API を使うべきタイミング
+
+<Tip>
+  **Response API の利用を推奨するケース**
+
+  - エージェントやマルチステップタスクのアプリケーションを構築する
+  - Web 検索、ファイル検索、コード実行などのマネージドツールが必要
+  - o1、o3 などの推論モデルを使用し、思考連鎖を確認したい
+  - マルチターン対話の状態管理をシンプルにしたい
+</Tip>
+
+<Note>
+  **当面 Chat Completions に留まるケース**
+
+  - 既存コードが `messages` 構造に大きく依存しており、短期的な移行メリットが小さい
+  - 一回限りのステートレスな補完のみで、ツールを一切使用しない
+  - Response API にまだ移行していないサードパーティラッパーライブラリに依存している
+</Note>
+
+## 移行のヒント
+
+<Steps>
+  <Step title="エンドポイントの置き換え">
+    `/v1/chat/completions` を `/v1/responses` に置き換え、`messages` を `input` に変更します。
+  </Step>
+  <Step title="previous_response_id でセッションを管理">
+    クライアント側で保存していた完全な履歴を削除し、直近の `response.id` のみを保持するようにします。
+  </Step>
+  <Step title="組み込みツールで自作機能を置き換え">
+    自作の検索、RAG、コード実行が、そのまま `web_search`、`file_search`、`code_interpreter` に置き換えられるかを評価します。
+  </Step>
+  <Step title="新しいイベントストリームへの対応">
+    ストリーミング出力を利用している場合は、delta 解析を `event.type` ベースのディスパッチに書き換えます。
+  </Step>
+</Steps>
+
+## まとめ
+
+Response API は「モデル + ツール + 状態 + マルチモーダル」を一つのインターフェースに集約し、エージェント時代に向けた OpenAI の主力エントリーポイントです。新規プロジェクトでは Response API から直接始めることをおすすめします。既存プロジェクトでは機能モジュールごとに段階的に移行し、組み込みツールと状態管理がもたらす複雑さの削減効果をまず享受するとよいでしょう。
