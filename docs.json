@@ -31,7 +31,22 @@
           "icon": "newspaper"
         }
       ]
-    }
+    },
+    "groups": [
+      {
+        "group": "Getting Started",
+        "pages": [
+          "index",
+          "quickstart"
+        ]
+      },
+      {
+        "group": "Guides",
+        "pages": [
+          "guides/response-api"
+        ]
+      }
+    ]
   },
   "logo": {
     "light": "/logo/light.svg",

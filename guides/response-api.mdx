@@ -1,0 +1,150 @@
+---
+title: "Response API 科普：新一代模型交互接口详解"
+sidebarTitle: "Response API"
+description: "深入了解 OpenAI Response API 的核心概念、与 Chat Completions 的区别、适用场景与最佳实践指南。"
+---
+
+Response API 是 OpenAI 推出的新一代模型交互接口，专为构建有状态、多轮、多工具协作的 AI 应用而设计。相比传统的 Chat Completions API，它把对话状态、工具调用、推理过程和多模态输入统一成一个更简洁、更强大的编程模型。
+
+## 什么是 Response API
+
+Response API（`/v1/responses`）是 OpenAI 在 2025 年推出的统一模型调用接口。它把过去分散在 Chat Completions、Assistants、Tools 等多个 API 里的能力整合起来，让开发者用一次调用就能完成：
+
+- 多轮对话与上下文管理
+- 内置工具调用（网页搜索、文件检索、代码解释器、计算机操作等）
+- 自定义函数调用
+- 推理模型（如 o 系列）的思维链输出
+- 文本、图像、音频等多模态输入输出
+
+## 与 Chat Completions 的核心区别
+
+<CardGroup cols={2}>
+  <Card title="有状态 vs 无状态" icon="database">
+    Chat Completions 每次请求都要传完整历史消息。Response API 支持通过 `previous_response_id` 直接续接上一次响应，服务端自动管理上下文。
+  </Card>
+  <Card title="统一输入结构" icon="layers">
+    Chat Completions 用 `messages` 数组。Response API 用 `input` 字段，可以是字符串、消息数组或包含图像、文件的多模态结构。
+  </Card>
+  <Card title="内置工具" icon="puzzle">
+    Response API 原生支持 `web_search`、`file_search`、`code_interpreter`、`computer_use` 等托管工具，无需自己实现。
+  </Card>
+  <Card title="推理透明化" icon="lightbulb">
+    对 o1、o3 等推理模型，Response API 会在输出里显式返回 `reasoning` 项，方便追踪与调试。
+  </Card>
+</CardGroup>
+
+## 一次最简单的调用
+
+```bash cURL
+curl https://api.openai.com/v1/responses \
+  -H "Authorization: Bearer $OPENAI_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-4.1",
+    "input": "用一句话解释什么是量子纠缠。"
+  }'
+```
+
+响应结构的核心字段：
+
+- `id`：本次响应的唯一 ID，可用于后续续接
+- `output`：模型生成的内容项数组（文本、工具调用、推理等）
+- `output_text`：所有文本内容拼接后的便捷字段
+- `usage`：token 消耗统计
+
+## 多轮对话：告别手动拼接历史
+
+传统写法每轮都要传完整 `messages`。Response API 只需传上一次的 `id`：
+
+```python Python
+from openai import OpenAI
+
+client = OpenAI()
+
+first = client.responses.create(
+    model="gpt-4.1",
+    input="推荐三本科幻小说。"
+)
+
+second = client.responses.create(
+    model="gpt-4.1",
+    previous_response_id=first.id,
+    input="其中最短的那本大概多少字？"
+)
+
+print(second.output_text)
+```
+
+服务端会自动带上前一轮的上下文，客户端逻辑更简洁，也减少了重复 token 计费。
+
+## 内置工具：一行开启网页搜索
+
+```python Python
+response = client.responses.create(
+    model="gpt-4.1",
+    tools=[{"type": "web_search"}],
+    input="2026 年诺贝尔物理学奖得主是谁？"
+)
+
+print(response.output_text)
+```
+
+无需自己维护搜索服务、抓取网页、拼接引用，模型会自动决定何时检索、如何整合。类似的还有 `file_search`（对上传文件做 RAG）、`code_interpreter`（沙箱执行代码）和 `computer_use`（操作浏览器/桌面）。
+
+## 流式输出
+
+Response API 使用事件流（Server-Sent Events）返回结构化事件，比 Chat Completions 的 delta 更易解析：
+
+```python Python
+stream = client.responses.create(
+    model="gpt-4.1",
+    input="写一首关于秋天的短诗。",
+    stream=True,
+)
+
+for event in stream:
+    if event.type == "response.output_text.delta":
+        print(event.delta, end="", flush=True)
+```
+
+常见事件类型包括 `response.created`、`response.output_text.delta`、`response.tool_call.created`、`response.completed` 等。
+
+## 什么时候用 Response API
+
+<Tip>
+  **推荐使用 Response API 的场景**
+
+  - 构建 Agent 或多步任务应用
+  - 需要网页搜索、文件检索、代码执行等托管工具
+  - 使用 o1、o3 等推理模型并想查看思维链
+  - 希望简化多轮对话状态管理
+</Tip>
+
+<Note>
+  **暂时留在 Chat Completions 的场景**
+
+  - 已有大量代码基于 `messages` 结构，短期无迁移收益
+  - 只需要一次性、无状态的补全，且不使用任何工具
+  - 依赖某些尚未迁移到 Response API 的第三方封装库
+</Note>
+
+## 迁移建议
+
+<Steps>
+  <Step title="替换 endpoint">
+    把 `/v1/chat/completions` 换成 `/v1/responses`，`messages` 改成 `input`。
+  </Step>
+  <Step title="用 previous_response_id 管理会话">
+    移除客户端保存的完整历史，改为只存最近一次的 `response.id`。
+  </Step>
+  <Step title="用内置工具替换自研能力">
+    评估自己实现的搜索、RAG、代码执行是否可以直接换成 `web_search`、`file_search`、`code_interpreter`。
+  </Step>
+  <Step title="适配新的事件流">
+    如果用了流式输出，把 delta 解析改成基于 `event.type` 的分派。
+  </Step>
+</Steps>
+
+## 小结
+
+Response API 把「模型 + 工具 + 状态 + 多模态」收敛到一个接口里，是 OpenAI 面向 Agent 时代的主推入口。对新项目，建议直接从 Response API 起步；对存量项目，可以按功能模块渐进迁移，优先享受内置工具和状态管理带来的复杂度收益。
