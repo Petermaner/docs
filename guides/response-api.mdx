@@ -1,39 +1,39 @@
 ---
-title: "Response API 科普：新一代模型交互接口详解"
+title: "Response API Explained: The Next-Gen Model Interface"
 sidebarTitle: "Response API"
-description: "深入了解 OpenAI Response API 的核心概念、与 Chat Completions 的区别、适用场景与最佳实践指南。"
+description: "A deep dive into OpenAI's Response API: core concepts, how it differs from Chat Completions, when to use it, and migration best practices."
 ---
 
-Response API 是 OpenAI 推出的新一代模型交互接口，专为构建有状态、多轮、多工具协作的 AI 应用而设计。相比传统的 Chat Completions API，它把对话状态、工具调用、推理过程和多模态输入统一成一个更简洁、更强大的编程模型。
+The Response API is OpenAI's next-generation model interface, purpose-built for stateful, multi-turn, tool-orchestrated AI applications. Compared to the classic Chat Completions API, it unifies conversation state, tool calls, reasoning, and multimodal input into a simpler and more powerful programming model.
 
-## 什么是 Response API
+## What is the Response API
 
-Response API（`/v1/responses`）是 OpenAI 在 2025 年推出的统一模型调用接口。它把过去分散在 Chat Completions、Assistants、Tools 等多个 API 里的能力整合起来，让开发者用一次调用就能完成：
+The Response API (`/v1/responses`) is the unified model endpoint OpenAI shipped in 2025. It consolidates capabilities that used to be spread across Chat Completions, Assistants, and Tools into a single call, so a single request can handle:
 
-- 多轮对话与上下文管理
-- 内置工具调用（网页搜索、文件检索、代码解释器、计算机操作等）
-- 自定义函数调用
-- 推理模型（如 o 系列）的思维链输出
-- 文本、图像、音频等多模态输入输出
+- Multi-turn conversation and context management
+- Built-in tools (web search, file search, code interpreter, computer use)
+- Custom function calling
+- Reasoning traces from reasoning models (the o-series)
+- Multimodal input and output (text, images, audio)
 
-## 与 Chat Completions 的核心区别
+## Key differences from Chat Completions
 
 <CardGroup cols={2}>
-  <Card title="有状态 vs 无状态" icon="database">
-    Chat Completions 每次请求都要传完整历史消息。Response API 支持通过 `previous_response_id` 直接续接上一次响应，服务端自动管理上下文。
+  <Card title="Stateful vs stateless" icon="database">
+    Chat Completions requires you to resend the full history on every request. The Response API lets you continue from the last response via `previous_response_id`, and manages context server-side.
   </Card>
-  <Card title="统一输入结构" icon="layers">
-    Chat Completions 用 `messages` 数组。Response API 用 `input` 字段，可以是字符串、消息数组或包含图像、文件的多模态结构。
+  <Card title="Unified input" icon="layers">
+    Chat Completions uses a `messages` array. The Response API uses a single `input` field that accepts a string, a message array, or a multimodal payload with images and files.
   </Card>
-  <Card title="内置工具" icon="puzzle">
-    Response API 原生支持 `web_search`、`file_search`、`code_interpreter`、`computer_use` 等托管工具，无需自己实现。
+  <Card title="Built-in tools" icon="puzzle">
+    The Response API natively supports hosted tools such as `web_search`, `file_search`, `code_interpreter`, and `computer_use`, so you no longer need to build them yourself.
   </Card>
-  <Card title="推理透明化" icon="lightbulb">
-    对 o1、o3 等推理模型，Response API 会在输出里显式返回 `reasoning` 项，方便追踪与调试。
+  <Card title="Transparent reasoning" icon="lightbulb">
+    For reasoning models like o1 and o3, the Response API returns explicit `reasoning` items in the output, making the chain of thought easy to inspect and debug.
   </Card>
 </CardGroup>
 
-## 一次最简单的调用
+## The simplest possible call
 
 ```bash cURL
 curl https://api.openai.com/v1/responses \
@@ -41,20 +41,20 @@ curl https://api.openai.com/v1/responses \
   -H "Content-Type: application/json" \
   -d '{
     "model": "gpt-4.1",
-    "input": "用一句话解释什么是量子纠缠。"
+    "input": "Explain quantum entanglement in one sentence."
   }'
 ```
 
-响应结构的核心字段：
+Key fields in the response:
 
-- `id`：本次响应的唯一 ID，可用于后续续接
-- `output`：模型生成的内容项数组（文本、工具调用、推理等）
-- `output_text`：所有文本内容拼接后的便捷字段
-- `usage`：token 消耗统计
+- `id`: unique ID for this response, usable to continue the conversation
+- `output`: array of items the model produced (text, tool calls, reasoning)
+- `output_text`: convenience field with all text items concatenated
+- `usage`: token accounting
 
-## 多轮对话：告别手动拼接历史
+## Multi-turn conversations without manual history
 
-传统写法每轮都要传完整 `messages`。Response API 只需传上一次的 `id`：
+The old pattern required resending the full `messages` array every turn. With the Response API you just pass the previous `id`:
 
 ```python Python
 from openai import OpenAI
@@ -63,42 +63,42 @@ client = OpenAI()
 
 first = client.responses.create(
     model="gpt-4.1",
-    input="推荐三本科幻小说。"
+    input="Recommend three science-fiction novels."
 )
 
 second = client.responses.create(
     model="gpt-4.1",
     previous_response_id=first.id,
-    input="其中最短的那本大概多少字？"
+    input="Which one is the shortest, and roughly how long is it?"
 )
 
 print(second.output_text)
 ```
 
-服务端会自动带上前一轮的上下文，客户端逻辑更简洁，也减少了重复 token 计费。
+The server automatically threads in the previous context, so the client is simpler and you avoid paying for repeated tokens.
 
-## 内置工具：一行开启网页搜索
+## Built-in tools: web search in one line
 
 ```python Python
 response = client.responses.create(
     model="gpt-4.1",
     tools=[{"type": "web_search"}],
-    input="2026 年诺贝尔物理学奖得主是谁？"
+    input="Who won the 2026 Nobel Prize in Physics?"
 )
 
 print(response.output_text)
 ```
 
-无需自己维护搜索服务、抓取网页、拼接引用，模型会自动决定何时检索、如何整合。类似的还有 `file_search`（对上传文件做 RAG）、`code_interpreter`（沙箱执行代码）和 `computer_use`（操作浏览器/桌面）。
+You don't need to run a search service, scrape pages, or stitch citations together. The model decides when to search and how to weave results into its answer. `file_search` (RAG over uploaded files), `code_interpreter` (sandboxed execution), and `computer_use` (browser and desktop control) work the same way.
 
-## 流式输出
+## Streaming output
 
-Response API 使用事件流（Server-Sent Events）返回结构化事件，比 Chat Completions 的 delta 更易解析：
+The Response API streams structured Server-Sent Events, which is easier to consume than Chat Completions' raw deltas:
 
 ```python Python
 stream = client.responses.create(
     model="gpt-4.1",
-    input="写一首关于秋天的短诗。",
+    input="Write a short poem about autumn.",
     stream=True,
 )
 
@@ -107,44 +107,44 @@ for event in stream:
         print(event.delta, end="", flush=True)
 ```
 
-常见事件类型包括 `response.created`、`response.output_text.delta`、`response.tool_call.created`、`response.completed` 等。
+Common event types include `response.created`, `response.output_text.delta`, `response.tool_call.created`, and `response.completed`.
 
-## 什么时候用 Response API
+## When to use the Response API
 
 <Tip>
-  **推荐使用 Response API 的场景**
+  **Good fits for the Response API**
 
-  - 构建 Agent 或多步任务应用
-  - 需要网页搜索、文件检索、代码执行等托管工具
-  - 使用 o1、o3 等推理模型并想查看思维链
-  - 希望简化多轮对话状态管理
+  - Building agents or multi-step task flows
+  - Needing hosted tools like web search, file search, or code execution
+  - Using reasoning models (o1, o3) and wanting to inspect the chain of thought
+  - Wanting to simplify multi-turn state management
 </Tip>
 
 <Note>
-  **暂时留在 Chat Completions 的场景**
+  **Reasons to stay on Chat Completions for now**
 
-  - 已有大量代码基于 `messages` 结构，短期无迁移收益
-  - 只需要一次性、无状态的补全，且不使用任何工具
-  - 依赖某些尚未迁移到 Response API 的第三方封装库
+  - You have a large codebase built on `messages` and no immediate migration payoff
+  - You only need stateless, one-shot completions with no tools
+  - You depend on a third-party wrapper that hasn't adopted the Response API yet
 </Note>
 
-## 迁移建议
+## Migration guide
 
 <Steps>
-  <Step title="替换 endpoint">
-    把 `/v1/chat/completions` 换成 `/v1/responses`，`messages` 改成 `input`。
+  <Step title="Swap the endpoint">
+    Replace `/v1/chat/completions` with `/v1/responses` and rename `messages` to `input`.
   </Step>
-  <Step title="用 previous_response_id 管理会话">
-    移除客户端保存的完整历史，改为只存最近一次的 `response.id`。
+  <Step title="Manage sessions with previous_response_id">
+    Stop persisting full histories on the client. Keep only the most recent `response.id`.
   </Step>
-  <Step title="用内置工具替换自研能力">
-    评估自己实现的搜索、RAG、代码执行是否可以直接换成 `web_search`、`file_search`、`code_interpreter`。
+  <Step title="Adopt built-in tools">
+    Evaluate whether your custom search, RAG, or code execution can be replaced with `web_search`, `file_search`, or `code_interpreter`.
   </Step>
-  <Step title="适配新的事件流">
-    如果用了流式输出，把 delta 解析改成基于 `event.type` 的分派。
+  <Step title="Migrate the event stream">
+    If you use streaming, switch delta parsing to a dispatch based on `event.type`.
   </Step>
 </Steps>
 
-## 小结
+## Summary
 
-Response API 把「模型 + 工具 + 状态 + 多模态」收敛到一个接口里，是 OpenAI 面向 Agent 时代的主推入口。对新项目，建议直接从 Response API 起步；对存量项目，可以按功能模块渐进迁移，优先享受内置工具和状态管理带来的复杂度收益。
+The Response API collapses model, tools, state, and multimodality into a single interface, and it's OpenAI's recommended entry point for the agent era. Start new projects on it directly; migrate existing ones feature by feature, prioritizing the complexity savings from hosted tools and server-side state.

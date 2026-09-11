@@ -11,6 +11,22 @@
   "navigation": {
     "languages": [
       {
+        "language": "zh",
+        "default": true,
+        "pages": [
+          {
+            "group": "开始使用",
+            "pages": []
+          },
+          {
+            "group": "指南",
+            "pages": [
+              "zh/guides/response-api"
+            ]
+          }
+        ]
+      },
+      {
         "language": "en",
         "pages": [
           {
@@ -24,24 +40,6 @@
             "group": "Guides",
             "pages": [
               "guides/response-api"
-            ]
-          }
-        ]
-      },
-      {
-        "language": "zh",
-        "pages": [
-          {
-            "group": "开始使用",
-            "pages": [
-              "zh/index",
-              "zh/quickstart"
-            ]
-          },
-          {
-            "group": "指南",
-            "pages": [
-              "zh/guides/response-api"
             ]
           }
         ]
