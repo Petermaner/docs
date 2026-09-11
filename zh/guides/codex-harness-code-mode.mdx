@@ -1,0 +1,121 @@
+---
+title: "PTC、Code Mode 与 MCP"
+description: "比较程序化工具调用、Code Mode 与 MCP 的职责边界和组合方式。"
+---
+
+## 7. PTC / Code Mode：为什么让模型写代码来调用工具？
+
+### 7.1 传统逐次工具调用有什么开销？
+
+任务：“读取三个模块的风险结果，筛选高风险，合并重复项。”
+
+基础做法让模型反复参与：请求工具 → 接收大 JSON → 生成下一次请求 → 接收数据 → 逐项总结。对于过滤、排序、分组、数值计算，模型不是最便宜也不是最可靠的执行器。
+
+PTC 把可确定的步骤交给一段程序：
+
+```javascript
+const results = await Promise.all([
+  tools.scan({module: "api"}),
+  tools.scan({module: "ui"})
+]);
+const count = results.reduce((sum, item) => sum + item.high, 0);
+text({highCount: count, sources: results.map(item => item.source)});
+```
+
+这里代码是在编排工具，不是在重新训练模型。工具可以仍来自 MCP、普通函数、Shell 等不同来源。
+
+### 7.2 控制流与数据流的变化
+
+```text
+直接调用：模型控制每个步骤，大量中间数据反复进入模型上下文
+程序调用：模型生成一个有边界的程序，代码控制循环/并行/过滤，汇总后回模型
+```
+
+如果 `n` 个结果各占 `S` token，直接全部展示约为 `n*S` 的结果负担；若代码压成 `R` token，则模型看到的数据可更接近 `R`，再加程序、工具定义和协议开销。**原始工具 I/O 依然存在，不能把少传给模型等同于系统完全不处理这些数据。**
+
+### 7.3 OpenAI API PTC 与 Codex Code Mode 的区别
+
+API PTC 文档描述的是托管 JavaScript 执行：启用 `programmatic_tool_calling`，按工具设置 `allowed_callers`，程序运行在隔离 V8 环境中。它没有一般 Node/文件系统/网络能力；应用自己的工具依然由应用执行。[Programmatic Tool Calling](https://developers.openai.com/api/docs/guides/tools-programmatic-tool-calling)
+
+Codex 公开源码还有本地/远程 Code Mode Host、runtime、session、cell、execute/wait 等模块。这些体现相似的“代码编排工具”理念，但与 API PTC 不是可直接互换的接口。源码中有 session 的显式 stored values 和 cell 生命周期，不能把它们写成 API PTC 也承诺跨程序全局变量持久化。[Code Mode runtime](https://github.com/openai/codex/blob/ddea03ad049142943bdbf13e937b1d67e8c1ba0c/codex-rs/code-mode-runtime/src/runtime/mod.rs)、[Session runtime](https://github.com/openai/codex/blob/ddea03ad049142943bdbf13e937b1d67e8c1ba0c/codex-rs/code-mode-runtime/src/session_runtime/mod.rs)
+
+| 维度 | 直接 Function Call | API PTC | Codex Code Mode |
+|---|---|---|---|
+| 模型主要输出 | 工具名与参数 | 程序以及工具调用相关项 | 代码单元输入 |
+| 控制流 | 模型/宿主外层循环 | 托管程序中的 JavaScript | 宿主中的 cell/runtime |
+| 外部能力 | 被注册工具 | 程序被允许调用的工具 | 当前执行上下文暴露的工具 |
+| 执行状态 | 一次调用与结果 | program 与调用链 | cell、yield、wait、终止等 |
+| 状态复用 | 靠对话/外部存储 | 不要假定普通 JS 全局变量跨程序存活 | 以当前 host/session 协议为准 |
+| 授权 | 工具执行前检查 | 嵌套工具仍要检查 | 嵌套工具仍要检查 |
+
+### 7.4 V8 isolate 是怎样接到工具上的？
+
+以下为依据公开代码结构整理的原理示意，省略了具体传输细节：
+
+```text
+模型提交代码
+    ↓
+宿主创建/管理 cell，准备允许的工具元数据
+    ↓
+V8 执行 tools.read(...)
+    ↓
+桥接层创建 Promise，并生成 ToolCall 事件
+    ↓
+外部执行器检查权限、运行工具
+    ↓
+ToolResponse / ToolError 回到 runtime
+    ↓
+resolve/reject 对应 Promise，继续 JavaScript
+    ↓
+text/image 等输出，或 yield，或最终 Result
+```
+
+固定源码能看到 `RuntimeCommand` 中的工具响应、错误、超时和终止，以及 `RuntimeEvent` 中的 ToolCall、Pending、YieldRequested、Result。这说明 isolate 之外还有宿主调度与消息桥接；“用了 V8”只描述其中一层。
+
+V8 isolate 也不是完备的 OS 沙盒。要防止不可信程序滥用，还要限制能拿到的工具、调用次数、输出量、CPU/内存、执行时长、网络和文件权限。尤其不能给它一个无限制 shell 后就宣称“只能用安全 API”。
+
+### 7.5 真实 API 接线最容易漏掉的字段
+
+嵌套 `function_call` 带有 caller 元信息；回传 `function_call_output` 时，应保留调用返回的 `caller`，让服务端恢复正确的程序。无状态继续时还要完整保留 program、fingerprint、reasoning 等返回项，不能只拼接输出文本。
+
+```python
+result_item = {
+    "type": "function_call_output",
+    "call_id": call["call_id"],
+    "output": json.dumps(tool_result),
+}
+if "caller" in call:
+    result_item["caller"] = call["caller"]
+```
+
+完整例子见 `live_api.py ptc`。它将 API 返回的程序交回托管运行时继续，**不在本机使用 `eval()` 执行模型代码**。
+
+### 7.6 为什么本地 Demo 使用 allSettled？
+
+`Promise.all` 遇到一个 rejection 会立刻 reject，但其余工作不会自动取消。如果上层只看到整体异常，可能既丢了部分成功结果，也误以为所有动作都没发生。
+
+`ptc_demo.mjs` 用 `allSettled` 收集每一个结果，保留来源，并将缺失模块记为 `partial`。这适合只读聚合。它不意味着所有任务都应 allSettled：如果第一步失败后第二步无意义，应按依赖顺序停止；若是写操作，最好保持清楚的提交边界。
+
+### 7.7 PTC 与 MCP 的关系
+
+MCP 描述 Host、Client、Server 如何交换能力和数据；PTC 描述模型怎样用程序组织调用。一个是连接协议，一个是执行/编排方式，完全可以组合。[MCP 架构规范](https://modelcontextprotocol.io/specification/2025-11-25/architecture)
+
+```text
+模型 → 程序 → tools.crm.search(...) → MCP Client → MCP Server → CRM
+```
+
+| 问题 | MCP 主要回答 | PTC 主要回答 |
+|---|---|---|
+| 工具怎么被发现和连接？ | 是 | 通常依赖外部发现机制 |
+| 工具输入输出怎么描述？ | 提供协议约定 | 使用工具描述及可用 schema |
+| 多次调用怎样循环、过滤、聚合？ | 不负责规定全部 Agent 控制流 | 程序承担这部分 |
+| 谁判断模型是否完成任务？ | 不由协议自动保证 | 也不由程序调用自动保证 |
+| 会不会绕过权限？ | 应由 Host 和 Server 执行控制 | 不应绕过原工具控制 |
+
+Anthropic 在公开文章中也讨论过 code execution 与 MCP 组合，以减少工具描述和中间数据带来的上下文负担。因此，说“代码调用工具只有 Codex 懂”并不成立。[Anthropic：Code execution with MCP](https://www.anthropic.com/engineering/code-execution-with-mcp)
+
+### 7.8 面试回答
+
+> PTC 把确定性的控制流和数据处理从模型逐步对话里移到程序里，适合批量只读查询、过滤、聚合和可预测依赖链。收益主要是减少模型往返和中间上下文，不是消除工具执行成本。它与 MCP 正交，且每次嵌套调用仍需权限、预算和审计。
+
+<a id="context"></a>

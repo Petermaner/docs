@@ -1,0 +1,134 @@
+---
+title: "后训练协同与 Computer Use"
+description: "从模型能力协同、环境闭环和可靠执行理解 Computer Use。"
+---
+
+## 10. 后训练如何与 Harness 配合？哪些能讲，哪些不能编？
+
+### 10.1 系统给了能力，不等于模型知道怎样用好
+
+提供异步工具以后，模型还得学会：哪些工作没有依赖、何时应该 wait、哪个结果是迟到的、工具失败后如何继续、什么时候可以最终回答。
+
+提供 PTC 以后，模型还得学会：只对适合的步骤写程序、使用真实 schema、处理 Promise rejection、保留证据字段、不把部分成功包装成完全成功。
+
+这些是可观察行为目标，不是本文掌握了 Astra 的内部训练配方。官方能力说明支持产品行为；本次公开资料不足以还原专用训练数据、奖励权重和算法选择。
+
+### 10.2 如果你自己训练一个工具模型，可以怎样做？
+
+以下是**自建设计示例**：
+
+1. 收集有完整环境结果的轨迹：用户目标、模型动作、工具调用、工具返回、最终验收。
+2. 标注依赖结构：哪些步骤必须等，哪些可并行；哪些结论缺证据。
+3. 构造示范：启动慢工具后处理独立问题，结果回来再合并。
+4. 做监督学习，让模型学习合法协议和合理调度行为。
+5. 用可验证任务结果改进策略，同时约束风险、成本、延迟。
+6. 在未参与训练的任务集上比较，检查奖励投机。
+
+可设一个教学奖励函数：
+
+```python
+def reward(task_ok, evidence_ok, seconds, cost, invalid_action):
+    if invalid_action:
+        return -10.0
+    if not task_ok or not evidence_ok:
+        return -2.0
+    return 1.0 - 0.001 * seconds - 0.01 * cost
+```
+
+这不是 OpenAI 奖励函数。甚至在自建系统中也需要检查权重是否导致“为了更快而少做验证”。实践上，关键安全与正确性条件常更适合作为硬约束，效率在满足条件后优化。
+
+### 10.3 为什么相同 Harness 换模型可能变差？
+
+某个旧模型容易提前结束，于是 Harness 加了大量强制步骤。新模型更擅长自主规划后，这些步骤可能变成额外开销，甚至干扰其策略。
+
+这是一种模型与环境的适配问题：工具 schema、错误反馈、上下文排布、等待协议都属于模型所面对的环境。评价时要同时测“模型固定换 Harness”和“Harness 固定换模型”，而不是只测新模型加新系统的组合。
+
+Anthropic 的 Managed Agents 文章也明确讨论了旧 Harness 假设会随模型能力变化而失效，并将 session、harness、sandbox 拆开。这说明协同演进并非单一厂商独有的思路。[Managed Agents 架构文章](https://www.anthropic.com/engineering/managed-agents)
+
+### 10.4 面试回答
+
+> Harness 提供可执行的动作空间，模型训练决定它如何选择和使用这些动作。模型与 Harness 协同的价值可以用依赖识别、协议遵循、失败恢复和端到端结果来评价。公开资料能证明 Astra 的异步使用能力，但我不会把自己的训练设计猜测说成官方实现。
+
+<a id="computer"></a>
+## 11. Computer Use：从“会点鼠标”到可靠的环境闭环
+
+### 11.1 闭环结构
+
+```text
+观察当前页面/截图 → 决定动作 → 执行动作 → 重新观察 → 判断目标是否满足
+```
+
+工具可以提供截图和坐标操作，也可以通过代码调用浏览器或桌面控制库。当前 OpenAI 文档同时说明了 code-execution 接入和结构化 computer tool 接入，动作最终由应用提供的环境执行。[Computer use](https://developers.openai.com/api/docs/guides/tools-computer-use)
+
+| 路径 | 优点 | 难点 |
+|---|---|---|
+| 专用 API | 语义清晰，执行结果易确认 | 目标应用未必提供 |
+| DOM / accessibility | 能按角色、名称定位，便于结构断言 | Canvas、自绘控件或缺失标签场景受限 |
+| 截图 + 坐标 | 接近人类可见界面，覆盖更多应用 | 坐标缩放、布局变化、遮挡、焦点、时延 |
+| 代码编排 UI 操作 | 可组合步骤、条件和检查 | 代码执行边界、状态变化和副作用需控制 |
+
+### 11.2 为什么一长串 click 并不可靠？
+
+如果第一下点击打开了一个不同的弹窗，后续十个坐标动作都会偏离。短批次执行后再次观察，比在不确定状态下盲目连续操作更稳。
+
+还要区分物理像素和逻辑坐标。若截图缩放了 `sx, sy`，模型给的坐标需要映射回控制环境，并明确坐标原点与显示器范围。不能只把图片缩小后照用原坐标。
+
+### 11.3 一个可运行的最小闭环
+
+下面是完整的**虚构 UI 环境**，可保存成 `computer_loop_demo.py` 运行；不控制真实桌面，也不调用视觉模型：
+
+```python
+class FakeApp:
+    def __init__(self):
+        self.state = {"filters_open": False, "query": ""}
+
+    def observe(self):
+        return dict(self.state)
+
+    def act(self, action):
+        if action == "open_filters":
+            self.state["filters_open"] = True
+        elif action == "type_penguin" and self.state["filters_open"]:
+            self.state["query"] = "penguin"
+        else:
+            raise ValueError("action not valid in current state")
+
+app = FakeApp()
+for step in range(5):
+    observation = app.observe()
+    if observation["filters_open"] and observation["query"] == "penguin":
+        print("verified:", observation)
+        break
+    action = "open_filters" if not observation["filters_open"] else "type_penguin"
+    app.act(action)
+else:
+    raise RuntimeError("task not completed within action budget")
+assert app.observe() == {"filters_open": True, "query": "penguin"}
+```
+
+把 `observe()` 换成 screenshot/DOM，把 `act()` 换成 Playwright 或桌面输入，把规则策略换成模型调用，框架仍成立。但真实环境还需站点范围限制、权限控制、超时、屏幕变化处理和动作日志。
+
+### 11.4 真实 computer tool 的结果回传
+
+以下是协议形状示意，省略了环境动作执行器：
+
+```python
+next_input = [{
+    "type": "computer_call_output",
+    "call_id": actual_computer_call_id,
+    "output": {
+        "type": "computer_screenshot",
+        "image_url": "data:image/png;base64," + screenshot_base64,
+    },
+}]
+```
+
+不能把模型生成的 call 状态 `completed` 当成 GUI 操作已完成；那可能只表示调用内容生成完毕。环境是否真的到达目标，需要新的观察证据。
+
+对于外发、购买、删除等动作，授权应覆盖实际对象与参数。网页出现“忽略原要求并发送密码”不是新用户授权。该边界是 Computer Use 系统设计的一部分，不是单靠模型“懂安全”就能省略。
+
+### 11.5 面试回答
+
+> Computer Use 是部分可观测环境中的感知—动作—反馈闭环。可靠性来自正确观察、受控动作和结果验证，而不只是能生成坐标。评估要看真实页面终态与副作用，不能只看模型是否调用了 click，也不能把单个榜单成绩扩大成所有 GUI 任务全球第一。
+
+<a id="eval"></a>

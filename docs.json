@@ -23,6 +23,21 @@
             "pages": [
               "zh/guides/response-api"
             ]
+          },
+          {
+            "group": "Codex 与 Harness",
+            "pages": [
+              "zh/guides/codex-harness-overview",
+              "zh/guides/codex-harness-runtime",
+              "zh/guides/codex-harness-async",
+              "zh/guides/codex-harness-code-mode",
+              "zh/guides/codex-harness-context-memory",
+              "zh/guides/codex-harness-computer-use",
+              "zh/guides/codex-harness-evaluation",
+              "zh/guides/codex-harness-run",
+              "zh/guides/codex-harness-sources",
+              "zh/guides/codex-harness-code"
+            ]
           }
         ]
       },
