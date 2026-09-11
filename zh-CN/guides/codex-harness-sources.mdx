@@ -1,0 +1,46 @@
+---
+title: "公开资料与源码导航"
+description: "按阅读顺序整理官方文档、论文、公开源码和固定版本证据。"
+---
+
+## 16. 公开资料与源码阅读顺序
+
+以下均为本次打开核对的主要资料。日期是本次核查时间，不表示该功能首次发布日期。源码存在不意味着相关能力已对所有用户默认启用。
+
+| 阅读顺序 | 资料 | 重点 |
+|---|---|---|
+| 1 | [App Server](https://learn.chatgpt.com/docs/app-server) | Thread/Turn/Item、双向协议、生命周期 |
+| 2 | [Astra 模型指南](https://developers.openai.com/api/docs/guides/latest-model?model=gpt-6-astra) | 能力支持，不用于猜测训练配方 |
+| 3 | [Async tool calling](https://developers.openai.com/api/docs/guides/async-tool-calling) | async 标志、call ID、wait、兼容限制 |
+| 4 | [Steering](https://developers.openai.com/api/docs/guides/steering) | accepted、successor、pending |
+| 5 | [PTC](https://developers.openai.com/api/docs/guides/tools-programmatic-tool-calling) | allowed_callers、caller、程序恢复 |
+| 6 | [Compaction](https://developers.openai.com/api/docs/guides/compaction) | 自动与独立压缩的输出处理 |
+| 7 | [Memories](https://learn.chatgpt.com/docs/customization/memories) | 本地记忆与产品控制 |
+| 8 | [Computer Use](https://developers.openai.com/api/docs/guides/tools-computer-use) | 环境执行与观察闭环 |
+| 9 | [Claude Agent loop](https://code.claude.com/docs/en/agent-sdk/agent-loop) | 公平理解其他系统已有能力 |
+| 10 | [Anthropic 长任务 Harness](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents) | 交接工件与验收 |
+| 11 | [Anthropic Managed Agents](https://www.anthropic.com/engineering/managed-agents) | session/harness/sandbox 分离 |
+| 12 | [MCP 架构规范](https://modelcontextprotocol.io/specification/2025-11-25/architecture) | 协议与编排的边界 |
+| 13 | [Anthropic code execution + MCP](https://www.anthropic.com/engineering/code-execution-with-mcp) | 代码编排并非排斥 MCP |
+| 14 | [Terminal-Bench 论文](https://arxiv.org/abs/2601.11868) | 任务与系统评测方法 |
+
+### 16.1 固定源码导航
+
+源码链接均锁定同一 commit。建议沿"协议入口 → handler → 状态管理 → 工具执行 → 测试"读取，不要只看 README 的架构图。
+
+| 文件 | 本次核实的内容 |
+|---|---|
+| [app-server/src/code_mode_host.rs](https://github.com/openai/codex/blob/ddea03ad049142943bdbf13e937b1d67e8c1ba0c/codex-rs/app-server/src/code_mode_host.rs) | 进程级宿主传输选择、gRPC URL 校验 |
+| [code-mode-runtime/src/runtime/mod.rs](https://github.com/openai/codex/blob/ddea03ad049142943bdbf13e937b1d67e8c1ba0c/codex-rs/code-mode-runtime/src/runtime/mod.rs) | V8 执行线程、命令与事件、Promise 对接 |
+| [core/src/tools/code_mode/execute_handler.rs](https://github.com/openai/codex/blob/ddea03ad049142943bdbf13e937b1d67e8c1ba0c/codex-rs/core/src/tools/code_mode/execute_handler.rs) | cell 启动与初次结果、yield 路径 |
+| [core/src/tools/code_mode/wait_handler.rs](https://github.com/openai/codex/blob/ddea03ad049142943bdbf13e937b1d67e8c1ba0c/codex-rs/core/src/tools/code_mode/wait_handler.rs) | cell 等待和终止 |
+| [core/src/compact_remote_v2.rs](https://github.com/openai/codex/blob/ddea03ad049142943bdbf13e937b1d67e8c1ba0c/codex-rs/core/src/compact_remote_v2.rs) | 压缩请求、输出验证、保留历史 |
+| [core/src/context_manager/history.rs](https://github.com/openai/codex/blob/ddea03ad049142943bdbf13e937b1d67e8c1ba0c/codex-rs/core/src/context_manager/history.rs) | 模型可见历史的管理 |
+| [core/src/context_manager/normalize.rs](https://github.com/openai/codex/blob/ddea03ad049142943bdbf13e937b1d67e8c1ba0c/codex-rs/core/src/context_manager/normalize.rs) | 调用和结果等历史项的规范化 |
+| [core/src/tools/handlers/new_context_window.rs](https://github.com/openai/codex/blob/ddea03ad049142943bdbf13e937b1d67e8c1ba0c/codex-rs/core/src/tools/handlers/new_context_window.rs) | 不先摘要的新窗口请求 |
+| [ext/history-notes/src/tools.rs](https://github.com/openai/codex/blob/ddea03ad049142943bdbf13e937b1d67e8c1ba0c/codex-rs/ext/history-notes/src/tools.rs) | 历史/笔记接口和一致性边界 |
+| [memories/write/src/phase1.rs](https://github.com/openai/codex/blob/ddea03ad049142943bdbf13e937b1d67e8c1ba0c/codex-rs/memories/write/src/phase1.rs) | 按 rollout 提取候选记忆 |
+| [memories/write/src/phase2.rs](https://github.com/openai/codex/blob/ddea03ad049142943bdbf13e937b1d67e8c1ba0c/codex-rs/memories/write/src/phase2.rs) | 全局整合、工作区与 lease |
+| [app-server/tests/suite/v2/turn_steer.rs](https://github.com/openai/codex/blob/ddea03ad049142943bdbf13e937b1d67e8c1ba0c/codex-rs/app-server/tests/suite/v2/turn_steer.rs) | 用测试核对 steering 的协议语义 |
+
+<a id="code"></a>

@@ -1,0 +1,46 @@
+---
+title: "公開資料とソースコード案内"
+description: "読み順に沿って公式ドキュメント、論文、公開ソース、固定バージョンの証拠を整理します。"
+---
+
+## 16. 公開資料とソースコードの読み順
+
+以下はいずれも今回突き合わせに開いた主な資料です。日付は今回の検証時点であり、その機能の初回公開日を表すものではありません。ソースが存在するからといって、その能力がすべてのユーザーで既定有効になっているとは限りません。
+
+| 読み順 | 資料 | 重点 |
+|---|---|---|
+| 1 | [App Server](https://learn.chatgpt.com/docs/app-server) | Thread/Turn/Item、双方向プロトコル、ライフサイクル |
+| 2 | [Astra モデルガイド](https://developers.openai.com/api/docs/guides/latest-model?model=gpt-6-astra) | 機能サポート。学習レシピの推測には使わない |
+| 3 | [Async tool calling](https://developers.openai.com/api/docs/guides/async-tool-calling) | async フラグ、call ID、wait、互換性の制限 |
+| 4 | [Steering](https://developers.openai.com/api/docs/guides/steering) | accepted、successor、pending |
+| 5 | [PTC](https://developers.openai.com/api/docs/guides/tools-programmatic-tool-calling) | allowed_callers、caller、プログラム復元 |
+| 6 | [Compaction](https://developers.openai.com/api/docs/guides/compaction) | 自動および独立圧縮の出力処理 |
+| 7 | [Memories](https://learn.chatgpt.com/docs/customization/memories) | ローカルのメモリと製品側の制御 |
+| 8 | [Computer Use](https://developers.openai.com/api/docs/guides/tools-computer-use) | 環境実行と観察のループ |
+| 9 | [Claude Agent loop](https://code.claude.com/docs/en/agent-sdk/agent-loop) | 他システムに既にある能力を公平に理解する |
+| 10 | [Anthropic 長時間タスク Harness](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents) | 引き継ぎ成果物と受け入れ |
+| 11 | [Anthropic Managed Agents](https://www.anthropic.com/engineering/managed-agents) | session/harness/sandbox の分離 |
+| 12 | [MCP アーキテクチャ仕様](https://modelcontextprotocol.io/specification/2025-11-25/architecture) | プロトコルとオーケストレーションの境界 |
+| 13 | [Anthropic code execution + MCP](https://www.anthropic.com/engineering/code-execution-with-mcp) | コードオーケストレーションは MCP を排除しない |
+| 14 | [Terminal-Bench 論文](https://arxiv.org/abs/2601.11868) | タスクとシステムの評価手法 |
+
+### 16.1 固定ソースコード案内
+
+ソースへのリンクはいずれも同じ commit に固定しています。「プロトコル入口 → handler → 状態管理 → ツール実行 → テスト」の順で読むことを勧めます。README のアーキテクチャ図だけを見るのは避けてください。
+
+| ファイル | 今回確認した内容 |
+|---|---|
+| [app-server/src/code_mode_host.rs](https://github.com/openai/codex/blob/ddea03ad049142943bdbf13e937b1d67e8c1ba0c/codex-rs/app-server/src/code_mode_host.rs) | プロセス単位のホスト転送方式の選択、gRPC URL の検証 |
+| [code-mode-runtime/src/runtime/mod.rs](https://github.com/openai/codex/blob/ddea03ad049142943bdbf13e937b1d67e8c1ba0c/codex-rs/code-mode-runtime/src/runtime/mod.rs) | V8 実行スレッド、コマンドとイベント、Promise の接続 |
+| [core/src/tools/code_mode/execute_handler.rs](https://github.com/openai/codex/blob/ddea03ad049142943bdbf13e937b1d67e8c1ba0c/codex-rs/core/src/tools/code_mode/execute_handler.rs) | cell の起動と初回結果、yield の経路 |
+| [core/src/tools/code_mode/wait_handler.rs](https://github.com/openai/codex/blob/ddea03ad049142943bdbf13e937b1d67e8c1ba0c/codex-rs/core/src/tools/code_mode/wait_handler.rs) | cell の待機と終了 |
+| [core/src/compact_remote_v2.rs](https://github.com/openai/codex/blob/ddea03ad049142943bdbf13e937b1d67e8c1ba0c/codex-rs/core/src/compact_remote_v2.rs) | 圧縮リクエスト、出力の検証、履歴の保持 |
+| [core/src/context_manager/history.rs](https://github.com/openai/codex/blob/ddea03ad049142943bdbf13e937b1d67e8c1ba0c/codex-rs/core/src/context_manager/history.rs) | モデルに見せる履歴の管理 |
+| [core/src/context_manager/normalize.rs](https://github.com/openai/codex/blob/ddea03ad049142943bdbf13e937b1d67e8c1ba0c/codex-rs/core/src/context_manager/normalize.rs) | 呼び出しや結果など履歴項目の正規化 |
+| [core/src/tools/handlers/new_context_window.rs](https://github.com/openai/codex/blob/ddea03ad049142943bdbf13e937b1d67e8c1ba0c/codex-rs/core/src/tools/handlers/new_context_window.rs) | 事前要約せずに新ウィンドウを開くリクエスト |
+| [ext/history-notes/src/tools.rs](https://github.com/openai/codex/blob/ddea03ad049142943bdbf13e937b1d67e8c1ba0c/codex-rs/ext/history-notes/src/tools.rs) | 履歴/ノートインターフェースと一貫性の境界 |
+| [memories/write/src/phase1.rs](https://github.com/openai/codex/blob/ddea03ad049142943bdbf13e937b1d67e8c1ba0c/codex-rs/memories/write/src/phase1.rs) | rollout 単位での候補メモリ抽出 |
+| [memories/write/src/phase2.rs](https://github.com/openai/codex/blob/ddea03ad049142943bdbf13e937b1d67e8c1ba0c/codex-rs/memories/write/src/phase2.rs) | 全体統合、ワークスペースと lease |
+| [app-server/tests/suite/v2/turn_steer.rs](https://github.com/openai/codex/blob/ddea03ad049142943bdbf13e937b1d67e8c1ba0c/codex-rs/app-server/tests/suite/v2/turn_steer.rs) | steering のプロトコル意味論をテストで突き合わせる |
+
+<a id="code"></a>

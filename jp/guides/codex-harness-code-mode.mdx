@@ -1,0 +1,121 @@
+---
+title: "PTC、Code Mode と MCP"
+description: "プログラムによるツール呼び出し、Code Mode、MCP の責務境界と組み合わせ方を比較します。"
+---
+
+## 7. PTC / Code Mode: なぜモデルにコードを書かせてツールを呼ばせるのか
+
+### 7.1 従来の逐次的ツール呼び出しにはどのようなオーバーヘッドがあるか
+
+タスク: 「3 つのモジュールのリスク結果を読み取り、高リスクを絞り込み、重複を統合する。」
+
+基本的なやり方では、モデルが繰り返し関与します。ツール要求 → 大きな JSON 受信 → 次の要求生成 → データ受信 → 項目ごとに要約。フィルタリング、ソート、グルーピング、数値計算に対して、モデルは最も安価でも最も信頼できる実行器でもありません。
+
+PTC は確定的なステップを 1 本のプログラムに任せます。
+
+```javascript
+const results = await Promise.all([
+  tools.scan({module: "api"}),
+  tools.scan({module: "ui"})
+]);
+const count = results.reduce((sum, item) => sum + item.high, 0);
+text({highCount: count, sources: results.map(item => item.source)});
+```
+
+ここでのコードはツールをオーケストレーションしているのであって、モデルを再学習させているわけではありません。ツール自体は MCP、通常の関数、Shell など多様な由来のままで構いません。
+
+### 7.2 制御フローとデータフローの変化
+
+```text
+直接呼び出し: モデルが各ステップを制御し、大量の中間データが繰り返しモデルコンテキストに入る
+プログラム呼び出し: モデルは境界のあるプログラムを 1 つ生成し、コードがループ/並列/フィルタを制御し、集約した結果をモデルに返す
+```
+
+`n` 件の結果がそれぞれ `S` token だとすれば、直接すべてを見せると結果の負担は `n*S` に近くなります。コードで `R` token に集約すれば、モデルが目にするデータは `R` に近づき、そこにプログラム、ツール定義、プロトコルのオーバーヘッドが加わります。**元のツール I/O は依然として存在し、モデルへ渡す量が少ないことをシステム全体でこれらのデータを扱わないことと同一視してはいけません。**
+
+### 7.3 OpenAI API PTC と Codex Code Mode の違い
+
+API PTC のドキュメントが述べているのは、マネージドな JavaScript 実行です。`programmatic_tool_calling` を有効化し、ツールごとに `allowed_callers` を設定し、プログラムは隔離された V8 環境で動きます。一般的な Node、ファイルシステム、ネットワークの能力は持ちません。アプリ自身のツールは依然としてアプリが実行します。[Programmatic Tool Calling](https://developers.openai.com/api/docs/guides/tools-programmatic-tool-calling)
+
+Codex の公開ソースには、ローカル/リモートの Code Mode Host、runtime、session、cell、execute/wait などのモジュールもあります。これらは「コードでツールをオーケストレーションする」という同じ発想を体現しますが、API PTC とそのまま置き換え可能なインターフェースではありません。ソースには session の明示的な stored values と cell のライフサイクルがあり、それらを API PTC もプログラムをまたぐグローバル変数の永続化を約束していると書いてはいけません。[Code Mode runtime](https://github.com/openai/codex/blob/ddea03ad049142943bdbf13e937b1d67e8c1ba0c/codex-rs/code-mode-runtime/src/runtime/mod.rs)、[Session runtime](https://github.com/openai/codex/blob/ddea03ad049142943bdbf13e937b1d67e8c1ba0c/codex-rs/code-mode-runtime/src/session_runtime/mod.rs)
+
+| 観点 | 直接 Function Call | API PTC | Codex Code Mode |
+|---|---|---|---|
+| モデルの主な出力 | ツール名と引数 | プログラムおよびツール呼び出し関連項 | コードセルへの入力 |
+| 制御フロー | モデル/ホストの外側ループ | マネージドプログラムの JavaScript | ホスト内の cell/runtime |
+| 外部能力 | 登録済みツール | プログラムが呼び出しを許可されたツール | 現在の実行コンテキストが露出しているツール |
+| 実行状態 | 1 回の呼び出しと結果 | program と呼び出しチェーン | cell、yield、wait、終了など |
+| 状態の再利用 | 対話や外部ストアに依存 | 通常の JS グローバル変数がプログラム間で生存するとは前提しない | 現行の host/session プロトコルに従う |
+| 認可 | ツール実行前にチェック | ネストされたツールも依然としてチェック要 | ネストされたツールも依然としてチェック要 |
+
+### 7.4 V8 isolate はどのようにツールにつながっているか
+
+以下は公開コードの構造に基づいて整理した原理の例示で、具体的な転送の詳細は省略しています。
+
+```text
+モデルがコードを提出
+    ↓
+ホストが cell を生成/管理し、許可されたツールのメタデータを準備
+    ↓
+V8 が tools.read(...) を実行
+    ↓
+ブリッジ層が Promise を生成し、ToolCall イベントを発行
+    ↓
+外部の実行器が権限を確認しツールを実行
+    ↓
+ToolResponse / ToolError が runtime に戻る
+    ↓
+対応する Promise が resolve/reject し、JavaScript の実行が続く
+    ↓
+text/image などの出力、あるいは yield、あるいは最終的な Result
+```
+
+固定したソースには、`RuntimeCommand` の中のツール応答、エラー、タイムアウト、終了と、`RuntimeEvent` の中の ToolCall、Pending、YieldRequested、Result が確認できます。これは isolate の外側にホストのスケジューリングとメッセージブリッジがあることを示しており、「V8 を使っている」というのはそのうちの一層を述べているに過ぎません。
+
+V8 isolate は完全な OS サンドボックスでもありません。信頼できないプログラムの乱用を防ぐには、取得できるツール、呼び出し回数、出力量、CPU/メモリ、実行時間、ネットワークとファイルの権限も制限する必要があります。特に、無制限の shell を与えてから「安全な API しか使えない」と主張してはいけません。
+
+### 7.5 実 API 接続で最も抜けやすいフィールド
+
+ネストされた `function_call` には caller メタ情報が付きます。`function_call_output` を返送する際は、呼び出しから返ってきた `caller` を保持し、サーバー側で正しいプログラムを復元できるようにしなければなりません。ステートレスに続行する場合も、program、fingerprint、reasoning など返却項目一式を保持する必要があり、出力テキストだけをつなげてはいけません。
+
+```python
+result_item = {
+    "type": "function_call_output",
+    "call_id": call["call_id"],
+    "output": json.dumps(tool_result),
+}
+if "caller" in call:
+    result_item["caller"] = call["caller"]
+```
+
+完全な例は `live_api.py ptc` を参照してください。この例は API から返されたプログラムをマネージドランタイムに返送して継続させます。**ローカルで `eval()` を使ってモデルのコードを実行することはしません。**
+
+### 7.6 なぜローカル Demo は allSettled を使っているのか
+
+`Promise.all` は 1 つでも rejection があるとすぐ reject しますが、残りの作業は自動でキャンセルされません。上位側で全体例外だけを見ると、部分的な成功結果を失う一方で、すべての動作が起きなかったと誤認するおそれがあります。
+
+`ptc_demo.mjs` は `allSettled` で各結果を集め、由来を保持し、欠けたモジュールを `partial` として記録します。これは読み取り専用の集約に適します。すべてのタスクを allSettled にすべきという意味ではありません。1 ステップ目が失敗すれば 2 ステップ目に意味がない場合は、依存順に停止すべきです。書き込み操作なら、明確なコミット境界を保つのが望ましいです。
+
+### 7.7 PTC と MCP の関係
+
+MCP は Host、Client、Server がどのように能力とデータを交換するかを規定し、PTC はモデルがプログラムでどのように呼び出しを組み立てるかを規定します。片方は接続プロトコル、もう片方は実行/オーケストレーションの方式であり、組み合わせて使えます。[MCP アーキテクチャ仕様](https://modelcontextprotocol.io/specification/2025-11-25/architecture)
+
+```text
+モデル → プログラム → tools.crm.search(...) → MCP Client → MCP Server → CRM
+```
+
+| 問い | MCP が主に答えるか | PTC が主に答えるか |
+|---|---|---|
+| ツールはどのように発見・接続されるか | はい | 通常は外部の発見機構に依存 |
+| ツールの入出力はどう記述されるか | プロトコル上の約束を提供 | 提供されたツール記述と利用可能 schema を使う |
+| 複数回呼び出しをどうループ、フィルタ、集約するか | Agent の制御フロー全体を規定するものではない | この部分をプログラムが担う |
+| モデルがタスクを完了したかは誰が判定するか | プロトコルが自動で保証するものではない | プログラム呼び出しも自動で保証するものではない |
+| 権限をバイパスしないか | Host と Server が制御を実施すべき | 元のツール制御をバイパスしてはならない |
+
+Anthropic は公開記事で、ツール記述や中間データによるコンテキスト負担を減らすために code execution と MCP を組み合わせることについて論じています。したがって「コードでツールを呼ばせるやり方を理解しているのは Codex だけ」というのは成り立ちません。[Anthropic: Code execution with MCP](https://www.anthropic.com/engineering/code-execution-with-mcp)
+
+### 7.8 面接での回答
+
+> PTC は、確定的な制御フローとデータ処理をモデルとの逐次対話からプログラム側へ移すやり方で、バッチ的な読み取り専用クエリ、フィルタ、集約、予測可能な依存チェーンに向いています。主な利得はモデル往復と中間コンテキストの削減であり、ツール実行コストの消失ではありません。MCP とは直交し、ネストされた各呼び出しでも権限、予算、監査は依然として必要です。
+
+<a id="context"></a>

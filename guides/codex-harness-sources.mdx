@@ -1,0 +1,46 @@
+---
+title: "Public references and source navigation"
+description: "Official docs, papers, public source code, and pinned-version evidence, in reading order."
+---
+
+## 16. Public references and source reading order
+
+All of the following are primary materials opened and cross-checked for this article. The date is the verification time of this session, not the feature's first release date. The presence of source code does not mean the capability is enabled by default for all users.
+
+| Reading order | Material | Focus |
+|---|---|---|
+| 1 | [App Server](https://learn.chatgpt.com/docs/app-server) | Thread/Turn/Item, bidirectional protocol, lifecycle |
+| 2 | [Astra model guide](https://developers.openai.com/api/docs/guides/latest-model?model=gpt-6-astra) | Capability support, not for guessing the training recipe |
+| 3 | [Async tool calling](https://developers.openai.com/api/docs/guides/async-tool-calling) | async flag, call ID, wait, compatibility limits |
+| 4 | [Steering](https://developers.openai.com/api/docs/guides/steering) | accepted, successor, pending |
+| 5 | [PTC](https://developers.openai.com/api/docs/guides/tools-programmatic-tool-calling) | allowed_callers, caller, program resumption |
+| 6 | [Compaction](https://developers.openai.com/api/docs/guides/compaction) | Output handling for automatic vs. standalone compaction |
+| 7 | [Memories](https://learn.chatgpt.com/docs/customization/memories) | Local memory and product controls |
+| 8 | [Computer Use](https://developers.openai.com/api/docs/guides/tools-computer-use) | Environment execution and observation loop |
+| 9 | [Claude Agent loop](https://code.claude.com/docs/en/agent-sdk/agent-loop) | Fair view of capabilities other systems already have |
+| 10 | [Anthropic long-task harness](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents) | Handoff artifacts and acceptance |
+| 11 | [Anthropic Managed Agents](https://www.anthropic.com/engineering/managed-agents) | Separation of session/harness/sandbox |
+| 12 | [MCP architecture spec](https://modelcontextprotocol.io/specification/2025-11-25/architecture) | Boundary between protocol and orchestration |
+| 13 | [Anthropic code execution + MCP](https://www.anthropic.com/engineering/code-execution-with-mcp) | Code orchestration does not exclude MCP |
+| 14 | [Terminal-Bench paper](https://arxiv.org/abs/2601.11868) | Methods for task and system evaluation |
+
+### 16.1 Pinned source navigation
+
+All source links are pinned to the same commit. Read along "protocol entry → handler → state management → tool execution → tests" instead of only reading the README architecture diagram.
+
+| File | What was verified this time |
+|---|---|
+| [app-server/src/code_mode_host.rs](https://github.com/openai/codex/blob/ddea03ad049142943bdbf13e937b1d67e8c1ba0c/codex-rs/app-server/src/code_mode_host.rs) | Process-level host transport selection, gRPC URL validation |
+| [code-mode-runtime/src/runtime/mod.rs](https://github.com/openai/codex/blob/ddea03ad049142943bdbf13e937b1d67e8c1ba0c/codex-rs/code-mode-runtime/src/runtime/mod.rs) | V8 execution thread, commands and events, Promise wiring |
+| [core/src/tools/code_mode/execute_handler.rs](https://github.com/openai/codex/blob/ddea03ad049142943bdbf13e937b1d67e8c1ba0c/codex-rs/core/src/tools/code_mode/execute_handler.rs) | Cell startup and first result, yield path |
+| [core/src/tools/code_mode/wait_handler.rs](https://github.com/openai/codex/blob/ddea03ad049142943bdbf13e937b1d67e8c1ba0c/codex-rs/core/src/tools/code_mode/wait_handler.rs) | Cell wait and termination |
+| [core/src/compact_remote_v2.rs](https://github.com/openai/codex/blob/ddea03ad049142943bdbf13e937b1d67e8c1ba0c/codex-rs/core/src/compact_remote_v2.rs) | Compaction requests, output validation, history retention |
+| [core/src/context_manager/history.rs](https://github.com/openai/codex/blob/ddea03ad049142943bdbf13e937b1d67e8c1ba0c/codex-rs/core/src/context_manager/history.rs) | Management of model-visible history |
+| [core/src/context_manager/normalize.rs](https://github.com/openai/codex/blob/ddea03ad049142943bdbf13e937b1d67e8c1ba0c/codex-rs/core/src/context_manager/normalize.rs) | Normalization of call and result history items |
+| [core/src/tools/handlers/new_context_window.rs](https://github.com/openai/codex/blob/ddea03ad049142943bdbf13e937b1d67e8c1ba0c/codex-rs/core/src/tools/handlers/new_context_window.rs) | New window request without prior summarization |
+| [ext/history-notes/src/tools.rs](https://github.com/openai/codex/blob/ddea03ad049142943bdbf13e937b1d67e8c1ba0c/codex-rs/ext/history-notes/src/tools.rs) | History/notes interface and consistency boundary |
+| [memories/write/src/phase1.rs](https://github.com/openai/codex/blob/ddea03ad049142943bdbf13e937b1d67e8c1ba0c/codex-rs/memories/write/src/phase1.rs) | Extract candidate memories per rollout |
+| [memories/write/src/phase2.rs](https://github.com/openai/codex/blob/ddea03ad049142943bdbf13e937b1d67e8c1ba0c/codex-rs/memories/write/src/phase2.rs) | Global consolidation, workspaces, and leases |
+| [app-server/tests/suite/v2/turn_steer.rs](https://github.com/openai/codex/blob/ddea03ad049142943bdbf13e937b1d67e8c1ba0c/codex-rs/app-server/tests/suite/v2/turn_steer.rs) | Use tests to cross-check the steering protocol semantics |
+
+<a id="code"></a>

@@ -1,0 +1,89 @@
+---
+title: "Hands-on runs and acceptance"
+description: "Run the local demos in this tutorial. Separate offline mechanism verification, real API wiring, and production systems."
+---
+
+## 15. Hands-on runs: verify mechanisms first, then connect a real model
+
+All companion files live in this tutorial's sibling `demos/` directory. Local teaching demos only use the Python standard library and Node's built-in modules. Python 3.11+ is required; this run actually used 3.14.7.
+
+```bash
+cd demos/codex-harness
+python3 demos/runtime_demo.py
+python3 demos/context_memory_demo.py
+node demos/ptc_demo.mjs
+python3 demos/computer_loop_demo.py
+python3 -m unittest discover -s demos -v
+```
+
+### 15.1 What this session actually verified
+
+| Item | This run's result | Boundary of the conclusion |
+|---|---|---|
+| Python mechanism and offline API contract tests | 14 passed (9 runtime/storage + 5 API wiring) | Not Codex's official test suite |
+| Runtime demo | Stale plan rejected; two tools returned with a stale marker | Independent work is script-simulated, not a real LLM |
+| Context / memory demo | History recallable, scope isolation, source revocation, and expiry flags all work | Uses fabricated structured facts, no model extraction |
+| Local PTC demo | Outputs partial, keeps successful results, failures, and sources | Static trusted code, not a reproduction of the isolated V8 host |
+| Local App Server probe | `initialize` succeeded | No thread was created, no model was requested |
+| Python/JavaScript syntax checks | Passed | Does not prove online API permissions or behavior |
+| Model API demos | Not actually called | Requires an API key, model permissions, and budget |
+| Fake GUI loop | Local assertions pass | No real screenshots, vision model, or desktop control |
+| Real GUI / benchmarks / post-training | Not run | Cannot claim the corresponding effects are verified |
+
+The App Server probe exited early inside a restricted sandbox on the first try. After being allowed to retry outside the sandbox, it initialized successfully. The probe process has ended and did not leave a background agent task behind.
+
+### 15.2 Real App Server probe
+
+```bash
+python3 demos/app_server_client.py
+```
+
+It does not send `thread/start` or `turn/start`. If you want to write your own client, generate the current protocol version first:
+
+```bash
+codex app-server generate-ts --out ./schemas
+codex app-server generate-json-schema --out ./schemas-json
+```
+
+Schema files only capture interface constraints. You still have to wire approvals, errors, notifications, and lifecycle end to end.
+
+### 15.3 Real model API examples
+
+Configure `OPENAI_API_KEY` in a private local environment variable. Do not put it in a tutorial or Git. This article does not read or use your API key. Once you have confirmed model and account support, you can run:
+
+```bash
+python3 demos/live_api.py direct
+python3 demos/live_api.py ptc
+python3 demos/live_api.py async
+python3 demos/live_api.py compact
+```
+
+The WebSocket steering example needs `ws`:
+
+```bash
+npm install ws
+node demos/steering_api.mjs
+```
+
+The API examples pin the Astra model ID `gpt-6-astra` from the screenshots, without silently downgrading to another model. Run each mode separately to avoid violating combination constraints such as async/PTC or steering/auto compaction. The online examples were not actually run this session. Quota, network, and API evolution can affect execution. If an unsupported field appears, check the official docs and model permissions first, and do not guess field names.
+
+### 15.4 Gap between the demos and a production system
+
+The local runtime's job table is in memory. The event log can be persisted, but there is **no implementation for crash recovery of running tasks or cross-process idempotency**. Event persistence and task dispatch are also not a single atomic transaction. A production design can add an outbox, a durable job ledger, leases, and execution-state reconciliation on recovery.
+
+Cancellation only works on the demo's asyncio coroutines. Python functions running in a ThreadPool and real OS child processes need their own termination design. The API examples show the call protocol only. They do not cover full streaming reconnection, token budget management, distributed retry, or production observability.
+
+### 15.5 A learning path suitable for interview prep
+
+| Exercise | Deliverable | Acceptance |
+|---|---|---|
+| 1: basic loop and layering | Draw the architecture yourself | Explain where model, tools, and execution state live |
+| 2: run the runtime demo | Read the event log | Find what happened while a tool was waiting |
+| 3: change the requirement | Construct a stale revision submission | It must be rejected |
+| 4: swap history windows | Push an error code out of the current window | Still retrievable from the archive |
+| 5: memory conflict | Add a new fact, revoke a source | Not read across projects, expired facts need re-review |
+| 6: PTC aggregation | Let one module fail | Final result marked partial, successful sources kept |
+| 7: real API | Run 10 small tasks on a fixed model | Log requests, tool results, cost, and failure reasons |
+| 8: fair comparison | Compare serial and concurrent on the same model | Correctness does not regress before you discuss latency gains |
+
+<a id="sources"></a>
